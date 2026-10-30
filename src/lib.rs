@@ -66,3 +66,13 @@ pub enum Outcome<R, S = ()> {
         residue: S,
     },
 }
+
+impl<R, S> Outcome<R, S> {
+    /// The result, if the call ran to the end.
+    pub fn completed(self) -> Option<R> {
+        match self {
+            Self::Completed(result) => Some(result),
+            Self::Stopped { .. } => None,
+        }
+    }
+}
