@@ -6,11 +6,13 @@ use std::ops::ControlFlow;
 
 mod controls;
 mod latched;
+mod memory;
 #[cfg(feature = "pyo3")]
 mod python;
 
 pub use controls::{Deadline, Flag};
 pub use latched::Latched;
+pub use memory::MemoryCap;
 #[cfg(feature = "pyo3")]
 pub use python::interruptible;
 
@@ -22,6 +24,8 @@ pub enum Stop {
     Signal,
     /// A time budget ran out.
     Deadline,
+    /// The process's resident memory passed a cap.
+    Memory,
     /// The caller asked for it.
     Requested,
 }

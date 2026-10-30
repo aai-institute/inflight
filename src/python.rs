@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use pyo3::exceptions::{PyInterruptedError, PyKeyboardInterrupt, PyTimeoutError};
+use pyo3::exceptions::{PyInterruptedError, PyKeyboardInterrupt, PyMemoryError, PyTimeoutError};
 use pyo3::{PyErr, PyResult, Python};
 
 use crate::{Control, Flag, Stop};
@@ -45,6 +45,7 @@ impl From<Stop> for PyErr {
         match stop {
             Stop::Signal => PyKeyboardInterrupt::new_err("stopped by a signal"),
             Stop::Deadline => PyTimeoutError::new_err("stopped at its deadline"),
+            Stop::Memory => PyMemoryError::new_err("stopped at its memory cap"),
             Stop::Requested => PyInterruptedError::new_err("stopped on request"),
         }
     }

@@ -44,6 +44,18 @@ let cancel = Flag::new();                      // raise from another thread: can
 let outcome = solve(&(&cancel, Deadline::after(Duration::from_secs(30))));
 ```
 
+## Memory cap
+
+`MemoryCap` stops once the process's resident memory passes a byte limit. A background thread samples it at a fixed interval, so a check costs one atomic load. It is a soft cap: memory can grow past it until the computation's next safe point. `start` returns `None` where the platform does not report resident memory.
+
+```rust
+use inflight::MemoryCap;
+use std::time::Duration;
+
+let cap = MemoryCap::start(8 << 30, Duration::from_millis(1)).expect("resident memory is measurable");
+let outcome = solve(&cap);
+```
+
 ## Python (`pyo3` feature)
 
 `interruptible` runs the work beside the main thread with the GIL released. The main thread checks for signals every 50 ms. If Python's signal handler raises, the work's control stops it at its next safe point, and the handler's exception is raised.
@@ -52,7 +64,7 @@ let outcome = solve(&(&cancel, Deadline::after(Duration::from_secs(30))));
 let outcome = inflight::interruptible(py, |signal| solve(&signal))?;
 ```
 
-`Stop` converts to `PyErr`: `Signal` to `KeyboardInterrupt`, `Deadline` to `TimeoutError`, `Requested` to `InterruptedError`.
+`Stop` converts to `PyErr`: `Signal` to `KeyboardInterrupt`, `Deadline` to `TimeoutError`, `Memory` to `MemoryError`, `Requested` to `InterruptedError`.
 
 ## Development
 
