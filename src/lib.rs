@@ -8,15 +8,19 @@ mod controls;
 mod latched;
 #[cfg(feature = "memory")]
 mod memory;
+mod observe;
 #[cfg(feature = "pyo3")]
 mod python;
+mod recorder;
 
 pub use controls::{Deadline, Flag};
 pub use latched::Latched;
 #[cfg(feature = "memory")]
 pub use memory::MemoryCap;
+pub use observe::{Checked, Closed, Ended, Observer, Progress, Scope, Vocabulary};
 #[cfg(feature = "pyo3")]
 pub use python::interruptible;
+pub use recorder::{Record, Recorder};
 
 /// Why a call stopped.
 #[non_exhaustive]
