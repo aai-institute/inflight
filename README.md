@@ -81,7 +81,20 @@ let outcome = solve(&cap);
 let outcome = inflight::interruptible(py, |signal| solve(signal))?;
 ```
 
-`interruptible_with` also runs a hook on the main thread at every wake and once after the work ends, such as draining an `Outbox` into a Python callback. If the hook raises, the work stops and that exception is raised.
+`interruptible_with` also runs a hook on the main thread at every wake and once after the work ends. If the hook raises, the work stops and that exception is raised.
+
+Two observers turn a Python function's keyword arguments into inflight:
+
+- `Limits::new(timeout, memory_limit)?` stops any computation after `timeout` seconds or past `memory_limit` bytes of resident memory, raising `TimeoutError` or `MemoryError`; a bad `timeout` is a `ValueError`. (`pyo3` turns on the `memory` feature.)
+- `ProgressCallback::new(progress)` hands the call's own progress to a Python `progress(done, total)`, and `ProgressCallback::summing(progress, |scope| ..)` the summed progress of the scopes it picks. Call its `report(py)` from `interruptible_with`'s hook; it calls Python only when the progress moved, and does nothing without a callable.
+
+```rust
+let limits = inflight::Limits::new(timeout, memory_limit)?;
+let progress = inflight::ProgressCallback::new(progress);
+let outcome = inflight::interruptible_with(py, |py| progress.report(py), |signal| {
+    solve(&(signal, (&limits, &progress)))
+})?;
+```
 
 `Stop` converts to `PyErr`: `Signal` to `KeyboardInterrupt`, `Deadline` to `TimeoutError`, `Memory` to `MemoryError`, `Requested` and `Rule` to `InterruptedError`.
 
