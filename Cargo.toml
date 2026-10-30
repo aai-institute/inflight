@@ -18,3 +18,8 @@ pyo3 = ["dep:pyo3"]
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[[test]]
+name = "signal"
+harness = false
+required-features = ["pyo3"]
