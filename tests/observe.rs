@@ -4,64 +4,64 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 
 use inflight::{
-    Checked, Closed, Control, Ended, Flag, Nest, Observer, Progress, Record, Recorder, Scope, Stop,
-    Vocabulary,
+    run, try_run, Closed, Ended, Every, Flag, Forward, Observer, Opened, Outbox, Outcome, Progress,
+    Record, Reports, Scope, Stop, Within,
 };
 
-struct Test;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Named(&'static str);
 
-impl Vocabulary for Test {
-    type Scope = &'static str;
-    type Event<'a> = &'a [u32];
+impl Reports for Named {
+    type Event = Vec<u32>;
 }
 
-fn recorder() -> Recorder<impl Fn(&&[u32]) -> Vec<u32> + Sync, &'static str, Vec<u32>> {
-    Recorder::new(|event: &&[u32]| event.to_vec())
+type Kept = Record<Named>;
+
+fn recorder() -> (Forward<Named>, Outbox<Named>) {
+    Forward::new()
 }
 
-fn ended(record: &Record<&'static str, Vec<u32>>) -> Option<Ended> {
+fn ended(record: &Kept) -> Option<Ended> {
     record.closed.map(|Closed { ended, .. }| ended)
 }
 
 #[test]
 fn nothing_is_built_for_an_unheard_scope() {
-    let root = Scope::<Test>::root(&());
-    let block = root.open(&"block");
-    assert!(!block.is_heard());
-    block.event(|| unreachable!("no observer hears this scope"));
-    assert_eq!(block.check(), ControlFlow::Continue(()));
-    block.close();
+    let outcome = run(&(), |call: &Scope<'_, Named>| {
+        call.within(Named("block"), |block| {
+            block.event(|| unreachable!("no observer hears this scope"));
+            block.check()
+        })
+    });
+    assert_eq!(outcome, Outcome::Completed(()));
 }
 
 #[test]
-fn a_recorder_keeps_the_tree_in_opening_order() {
-    let recorder = recorder();
-    {
-        let root = Scope::<Test>::root(&recorder);
-        let data = [1, 2];
-        root.event(|| &data[..1]);
+fn a_recorder_keeps_the_tree_in_starting_order() {
+    let (recorder, outbox) = recorder();
+    let outcome = run(&recorder, |call| {
+        call.event(|| vec![1]);
         for name in ["first", "second"] {
-            let block = root.open(&name);
-            let run = block.open(&"run");
-            run.progress(Progress {
-                done: 3,
-                total: Some(4),
-            });
-            run.event(|| &data[..]);
-            run.close();
-            block.close();
+            call.within(Named(name), |block| {
+                block.within(Named("run"), |run| {
+                    run.progress(3, Some(4));
+                    run.event(|| vec![1, 2]);
+                    Ok(())
+                })
+            })?;
         }
-        root.close();
-    }
-    let record = recorder.into_record();
+        Ok(())
+    });
+    assert_eq!(outcome, Outcome::Completed(()));
+    let record = outbox.record();
     assert_eq!(record.events, [vec![1]]);
     assert_eq!(ended(&record), Some(Ended::Completed));
     let names: Vec<_> = record.children.iter().map(|(name, _)| *name).collect();
-    assert_eq!(names, ["first", "second"]);
+    assert_eq!(names, [Named("first"), Named("second")]);
     let (_, block) = &record.children[1];
     assert_eq!(ended(block), Some(Ended::Completed));
     let (name, run) = &block.children[0];
-    assert_eq!(*name, "run");
+    assert_eq!(*name, Named("run"));
     assert_eq!(run.events, [vec![1, 2]]);
     assert_eq!(
         run.progress,
@@ -73,53 +73,76 @@ fn a_recorder_keeps_the_tree_in_opening_order() {
 }
 
 #[test]
-fn parallel_scopes_keep_their_slots() {
-    let recorder = recorder();
+fn parallel_scopes_each_keep_their_own_record() {
+    let (recorder, outbox) = recorder();
     let names = ["a", "b", "c", "d", "e", "f", "g", "h"];
-    {
-        let root = Scope::<Test>::root(&recorder);
-        let blocks: Vec<_> = names.iter().map(|name| root.open(name)).collect();
+    run(&recorder, |call| {
         thread::scope(|threads| {
-            for (k, block) in blocks.iter().enumerate().rev() {
+            for (k, name) in names.into_iter().enumerate() {
                 threads.spawn(move || {
-                    block.event(|| &[7][..]);
-                    block.progress(Progress {
-                        done: k as u64,
-                        total: None,
-                    });
+                    call.within(Named(name), |block| {
+                        block.event(|| vec![k as u32]);
+                        block.progress(k as u64, None);
+                        Ok::<_, Stop>(())
+                    })
                 });
             }
         });
-        blocks.into_iter().rev().for_each(Scope::close);
-        root.close();
+        Ok(())
+    });
+    let record = outbox.record();
+    assert_eq!(record.children.len(), names.len());
+    for (Named(name), block) in &record.children {
+        let k = names.iter().position(|n| n == name).expect("one of ours") as u32;
+        assert_eq!(block.events, [vec![k]]);
+        assert_eq!(block.progress.map(|p| p.done), Some(u64::from(k)));
+        assert_eq!(ended(block), Some(Ended::Completed));
     }
-    let record = recorder.into_record();
-    for (k, ((name, block), expected)) in record.children.iter().zip(names).enumerate() {
-        assert_eq!(*name, expected);
-        assert_eq!(block.progress.map(|p| p.done), Some(k as u64));
-        assert_eq!(block.events, [vec![7]]);
+}
+
+#[derive(Debug, PartialEq)]
+enum Failure {
+    Bad,
+    Stopped(Stop),
+}
+
+impl From<Stop> for Failure {
+    fn from(stop: Stop) -> Self {
+        Failure::Stopped(stop)
     }
 }
 
 #[test]
-fn a_scope_left_without_closing_says_why() {
-    let recorder = recorder();
+fn a_scope_ends_as_its_body_returns() {
+    let (recorder, outbox) = recorder();
     let flag = Flag::new();
     let watch = (&flag, &recorder);
-    {
-        let root = Scope::<Test>::root(&watch);
-        drop(root.open(&"failed"));
+    let outcome = try_run(&watch, |call| {
+        assert_eq!(
+            call.within(Named("failed"), |_| Err::<(), _>(Failure::Bad)),
+            Err(Failure::Bad)
+        );
         let unwound = catch_unwind(AssertUnwindSafe(|| {
-            let _block = root.open(&"unwound");
-            panic!("inside a scope");
+            call.within(Named("unwound"), |_| -> Result<(), Failure> {
+                panic!("inside a scope")
+            })
         }));
         assert!(unwound.is_err());
         flag.raise(Stop::Requested);
-        let block = root.open(&"stopped");
-        assert_eq!(block.check(), ControlFlow::Break(Stop::Requested));
-        drop(block);
-    }
-    let record = recorder.into_record();
+        call.within(Named("stopped"), |block| {
+            block.check()?;
+            Ok::<_, Failure>(())
+        })
+    });
+    assert_eq!(
+        outcome,
+        Ok(Outcome::Stopped {
+            reason: Stop::Requested,
+            residue: ()
+        }),
+        "an error a stop caused is moot"
+    );
+    let record = outbox.record();
     let ends: Vec<_> = record.children.iter().map(|(_, r)| ended(r)).collect();
     assert_eq!(
         ends,
@@ -132,137 +155,217 @@ fn a_scope_left_without_closing_says_why() {
     assert_eq!(ended(&record), Some(Ended::Stopped(Stop::Requested)));
 }
 
-/// Stops once it has heard `after` events: a rule that decides from what it observes.
+#[test]
+fn an_error_without_a_stop_is_returned() {
+    let outcome = try_run(&(), |_: &Scope<'_, Named>| Err::<(), _>(Failure::Bad));
+    assert_eq!(outcome, Err(Failure::Bad));
+}
+
+/// Stops once it has heard `after` events: a rule that decides from what it hears.
 struct Budget {
     after: u32,
     heard: AtomicU32,
 }
 
-impl Observer<Test> for Budget {
+impl Observer<Named> for Budget {
     fn check(&self) -> ControlFlow<Stop> {
         match self.heard.load(Ordering::Relaxed) >= self.after {
             true => ControlFlow::Break(Stop::Requested),
             false => ControlFlow::Continue(()),
         }
     }
-    fn open(&self, _: &&'static str) -> Option<Box<dyn Observer<Test> + '_>> {
-        Some(Box::new(self))
-    }
-    fn event(&self, _: &&[u32]) {
+    fn event(&self, _: &Vec<u32>) {
         self.heard.fetch_add(1, Ordering::Relaxed);
     }
 }
 
 #[test]
-fn a_rule_that_hears_inside_a_scope_stops_the_whole_call() {
+fn a_rule_hears_inside_every_scope_by_default_and_its_stop_holds() {
     let budget = Budget {
         after: 2,
         heard: AtomicU32::new(0),
     };
-    let root = Scope::<Test>::root(&budget);
-    let (first, second) = (root.open(&"first"), root.open(&"second"));
-    first.event(|| &[]);
-    assert_eq!(first.check(), ControlFlow::Continue(()));
-    first.event(|| &[]);
-    assert_eq!(first.check(), ControlFlow::Break(Stop::Requested));
-    budget.heard.store(0, Ordering::Relaxed);
-    assert_eq!(
-        second.check(),
-        ControlFlow::Break(Stop::Requested),
-        "latched"
-    );
-    assert_eq!(root.stopped(), Some(Stop::Requested));
+    let outcome = run(&budget, |call| {
+        call.within(Named("first"), |first| {
+            first.event(Vec::new);
+            first.check()?;
+            first.event(Vec::new);
+            first.check()
+        })?;
+        panic!("the second event stopped the call");
+        #[allow(unreachable_code)]
+        Ok(())
+    });
+    assert!(matches!(
+        outcome,
+        Outcome::Stopped {
+            reason: Stop::Requested,
+            ..
+        }
+    ));
 }
 
-/// Declines every scope but stops the call: control reaches scopes it does not hear.
+/// Counts the checks it is asked: once per safe point, however deep.
+#[derive(Default)]
+struct Checks(AtomicU32);
+
+impl Observer<Named> for Checks {
+    fn check(&self) -> ControlFlow<Stop> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        ControlFlow::Continue(())
+    }
+}
+
+fn three_deep_check(observer: &dyn Observer<Named>) {
+    run(observer, |call| {
+        call.within(Named("block"), |block| {
+            block.within(Named("run"), |run| run.check())
+        })
+    });
+}
+
+#[test]
+fn an_observer_is_asked_once_per_safe_point_however_deep() {
+    let checks = Checks::default();
+    three_deep_check(&checks);
+    assert_eq!(checks.0.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn beside_one_that_opens_its_own_child_it_is_still_asked_once() {
+    let (checks, (recorder, outbox)) = (Checks::default(), recorder());
+    three_deep_check(&(&checks, &recorder));
+    assert_eq!(checks.0.load(Ordering::Relaxed), 1);
+    let record = outbox.record();
+    assert_eq!(record.children[0].1.children[0].0, Named("run"));
+}
+
+/// Skips every scope but stops the call: checks reach scopes it does not hear.
 struct Deaf(Flag);
 
-impl Observer<Test> for Deaf {
+impl Observer<Named> for Deaf {
     fn check(&self) -> ControlFlow<Stop> {
-        Control::check(&self.0)
+        self.0.check()
+    }
+    fn open(&self, _: &Named) -> Opened<'_, Named> {
+        Opened::Skip
     }
 }
 
 #[test]
-fn checks_reach_the_call_through_unheard_scopes() {
+fn checks_reach_the_call_through_skipped_scopes() {
     let deaf = Deaf(Flag::new());
-    let root = Scope::<Test>::root(&deaf);
-    let block = root.open(&"block");
-    let run = block.open(&"run");
-    assert!(!run.is_heard());
-    deaf.0.raise(Stop::Signal);
-    assert_eq!(run.check(), ControlFlow::Break(Stop::Signal));
-}
-
-#[test]
-fn a_callers_own_control_checks_through_checked() {
-    struct Never;
-    impl Control for Never {
-        fn check(&self) -> ControlFlow<Stop> {
-            ControlFlow::Break(Stop::Deadline)
+    let outcome = run(&deaf, |call| {
+        call.within(Named("block"), |block| {
+            block.within(Named("run"), |run| {
+                run.event(|| unreachable!("skipped"));
+                deaf.0.raise(Stop::Signal);
+                run.check()
+            })
+        })
+    });
+    assert!(matches!(
+        outcome,
+        Outcome::Stopped {
+            reason: Stop::Signal,
+            ..
         }
-    }
-    let checked = Checked(Never);
-    let root = Scope::<Test>::root(&checked);
-    assert_eq!(root.check(), ControlFlow::Break(Stop::Deadline));
+    ));
 }
 
 #[test]
 fn a_pair_hears_both_and_asks_the_first_first() {
-    let (left, right) = (recorder(), recorder());
+    let ((left, left_out), (right, right_out)) = (recorder(), recorder());
     let (first, second) = (Flag::new(), Flag::new());
     first.raise(Stop::Signal);
     second.raise(Stop::Requested);
     let watch = ((&first, &left), (&second, &right));
-    {
-        let root = Scope::<Test>::root(&watch);
-        let block = root.open(&"block");
-        block.event(|| &[5]);
-        assert_eq!(block.check(), ControlFlow::Break(Stop::Signal));
-    }
-    for record in [left.into_record(), right.into_record()] {
+    let outcome = run(&watch, |call| {
+        call.within(Named("block"), |block| {
+            block.event(|| vec![5]);
+            block.check()
+        })
+    });
+    assert!(matches!(
+        outcome,
+        Outcome::Stopped {
+            reason: Stop::Signal,
+            ..
+        }
+    ));
+    for record in [left_out.record(), right_out.record()] {
         assert_eq!(record.children[0].1.events, [vec![5]]);
     }
 }
 
-/// An outer computation that nests `Test` runs, as within nests approx-chol's builds.
-struct Outer;
+#[test]
+fn every_thins_events_and_progress_per_scope_but_keeps_the_last_progress() {
+    let (recorder, outbox) = recorder();
+    let every = Every::new(3, &recorder);
+    run(&every, |call| {
+        for name in ["a", "b"] {
+            call.within(Named(name), |block| {
+                for k in 1..=8 {
+                    block.event(|| vec![k]);
+                    block.progress(u64::from(k), Some(8));
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    });
+    let record = outbox.record();
+    for (_, block) in &record.children {
+        assert_eq!(block.events, [vec![1], vec![4], vec![7]]);
+        assert_eq!(
+            block.progress.map(|p| p.done),
+            Some(8),
+            "the last, off the stride"
+        );
+        assert_eq!(ended(block), Some(Ended::Completed));
+    }
+}
 
+#[test]
+fn every_never_thins_checks() {
+    let checks = Checks::default();
+    let every = Every::new(100, &checks);
+    run(&every, |call: &Scope<'_, Named>| {
+        (0..5).try_for_each(|_| call.check())
+    });
+    assert_eq!(checks.0.load(Ordering::Relaxed), 5);
+}
+
+/// An outer algorithm that nests `Named` calls, as within nests approx-chol's builds.
 #[derive(Clone, Debug, PartialEq)]
 enum OuterScope {
     Rung(u32),
     Inner(&'static str),
 }
 
-enum OuterEvent<'a> {
+#[derive(Clone, Debug, PartialEq)]
+enum OuterEvent {
     Iteration,
-    Inner(&'a [u32]),
+    Inner(Vec<u32>),
 }
 
-impl Vocabulary for Outer {
-    type Scope = OuterScope;
-    type Event<'a> = OuterEvent<'a>;
+impl Reports for OuterScope {
+    type Event = OuterEvent;
 }
 
-impl From<&&'static str> for OuterScope {
-    fn from(scope: &&'static str) -> Self {
-        OuterScope::Inner(scope)
+impl Within<Named> for OuterScope {
+    fn scope(Named(name): &Named) -> Self {
+        OuterScope::Inner(name)
+    }
+    fn event(event: &Vec<u32>) -> Option<OuterEvent> {
+        Some(OuterEvent::Inner(event.clone()))
     }
 }
 
-impl<'r, 'a> From<&'r &'a [u32]> for OuterEvent<'r> {
-    fn from(event: &'r &'a [u32]) -> Self {
-        OuterEvent::Inner(event)
-    }
-}
+type OuterRecord = Record<OuterScope>;
 
-type OuterRecord = Record<OuterScope, String>;
-
-fn outer_recorder() -> Recorder<impl Fn(&OuterEvent<'_>) -> String + Sync, OuterScope, String> {
-    Recorder::new(|event: &OuterEvent<'_>| match event {
-        OuterEvent::Iteration => "Iteration".to_owned(),
-        OuterEvent::Inner(inner) => format!("Inner({inner:?})"),
-    })
+fn outer_recorder() -> (Forward<OuterScope>, Outbox<OuterScope>) {
+    Forward::new()
 }
 
 fn outer_ended(record: &OuterRecord) -> Option<Ended> {
@@ -271,62 +374,137 @@ fn outer_ended(record: &OuterRecord) -> Option<Ended> {
 
 #[test]
 fn a_nested_call_joins_the_outer_tree() {
-    let recorder = outer_recorder();
-    {
-        let root = Scope::<Outer>::root(&recorder);
-        let rung = root.open(&OuterScope::Rung(1));
-        rung.event(|| OuterEvent::Iteration);
-        {
-            let nest = Nest::new(&rung);
-            let inner = Scope::<Test>::root(&nest);
-            let block = inner.open(&"block");
-            block.event(|| &[4, 2]);
-            block.progress(Progress {
-                done: 1,
-                total: Some(1),
-            });
-            block.close();
-            inner.close();
-        }
-        rung.close();
-        root.close();
-    }
-    let record = recorder.into_record();
+    let (recorder, outbox) = outer_recorder();
+    run(&recorder, |call| {
+        call.within(OuterScope::Rung(1), |rung| {
+            rung.event(|| OuterEvent::Iteration);
+            let inner = rung.nest(OuterScope::Rung(2), |nest| {
+                Ok::<_, Stop>(run(nest, |inner| {
+                    inner.within(Named("block"), |block| {
+                        block.event(|| vec![4, 2]);
+                        block.progress(1, Some(1));
+                        Ok(())
+                    })
+                }))
+            })?;
+            assert_eq!(inner, Outcome::Completed(()));
+            Ok(())
+        })
+    });
+    let record = outbox.record();
     let (scope, rung) = &record.children[0];
     assert_eq!(*scope, OuterScope::Rung(1));
-    assert_eq!(rung.events, ["Iteration"]);
+    assert_eq!(rung.events, [OuterEvent::Iteration]);
     assert_eq!(outer_ended(rung), Some(Ended::Completed));
-    let (scope, block) = &rung.children[0];
+    let (scope, nest) = &rung.children[0];
+    assert_eq!(*scope, OuterScope::Rung(2));
+    let (scope, block) = &nest.children[0];
     assert_eq!(*scope, OuterScope::Inner("block"));
-    assert_eq!(block.events, ["Inner([4, 2])"]);
+    assert_eq!(block.events, [OuterEvent::Inner(vec![4, 2])]);
     assert_eq!(block.progress.map(|p| p.done), Some(1));
     assert_eq!(outer_ended(block), Some(Ended::Completed));
 }
 
 #[test]
 fn a_nested_stop_stops_the_outer_call() {
-    let recorder = outer_recorder();
+    let (recorder, outbox) = outer_recorder();
     let flag = Flag::new();
     let watch = (&flag, &recorder);
-    {
-        let root = Scope::<Outer>::root(&watch);
-        let rung = root.open(&OuterScope::Rung(2));
-        let nest = Nest::new(&rung);
-        let inner = Scope::<Test>::root(&nest);
-        let block = inner.open(&"block");
-        flag.raise(Stop::Signal);
-        assert_eq!(block.check(), ControlFlow::Break(Stop::Signal));
-        drop(block);
-        drop(inner);
-        assert_eq!(
-            root.stopped(),
-            Some(Stop::Signal),
-            "the inner stop latched the outer call"
-        );
-    }
-    let record = recorder.into_record();
+    let outcome = run(&watch, |call| {
+        call.within(OuterScope::Rung(2), |rung| {
+            let inner = rung.nest(OuterScope::Rung(3), |nest| {
+                Ok::<_, Stop>(run(nest, |inner| {
+                    inner.within(Named("block"), |block| {
+                        flag.raise(Stop::Signal);
+                        block.check()
+                    })
+                }))
+            })?;
+            assert!(matches!(
+                inner,
+                Outcome::Stopped {
+                    reason: Stop::Signal,
+                    ..
+                }
+            ));
+            rung.check()
+        })
+    });
+    assert!(matches!(
+        outcome,
+        Outcome::Stopped {
+            reason: Stop::Signal,
+            ..
+        }
+    ));
+    let record = outbox.record();
     let (_, rung) = &record.children[0];
-    let (_, block) = &rung.children[0];
+    let (_, block) = &rung.children[0].1.children[0];
     assert_eq!(outer_ended(block), Some(Ended::Stopped(Stop::Signal)));
     assert_eq!(outer_ended(rung), Some(Ended::Stopped(Stop::Signal)));
+}
+
+#[derive(Default)]
+struct OuterChecks(AtomicU32);
+
+impl Observer<OuterScope> for OuterChecks {
+    fn check(&self) -> ControlFlow<Stop> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        ControlFlow::Continue(())
+    }
+}
+
+#[test]
+fn a_nested_safe_point_asks_the_outer_observer_once() {
+    let checks = OuterChecks::default();
+    run(&checks, |call| {
+        let _ = call.nest(OuterScope::Rung(1), |nest| {
+            run(nest, |inner| {
+                inner.within(Named("block"), |block| {
+                    block.within(Named("run"), |run| run.check())
+                })
+            })
+            .into_result()
+        });
+        Ok(())
+    });
+    assert_eq!(checks.0.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn an_inner_only_stop_closes_the_outer_mirror_as_stopped() {
+    let (recorder, outbox) = outer_recorder();
+    let flag = Flag::new();
+    flag.raise(Stop::Signal);
+    let outcome = run(&recorder, |call| {
+        call.within(OuterScope::Rung(1), |rung| {
+            let inner = rung.nest(OuterScope::Rung(2), |nest| {
+                Ok::<_, Stop>(run(&(nest, &flag), |inner| {
+                    inner.within(Named("block"), |block| block.check())
+                }))
+            })?;
+            assert!(matches!(
+                inner,
+                Outcome::Stopped {
+                    reason: Stop::Signal,
+                    ..
+                }
+            ));
+            Ok(())
+        })
+    });
+    assert_eq!(outcome, Outcome::Completed(()));
+    let record = outbox.record();
+    let (_, rung) = &record.children[0];
+    let (_, block) = &rung.children[0].1.children[0];
+    assert_eq!(outer_ended(block), Some(Ended::Stopped(Stop::Signal)));
+}
+
+impl inflight::Stopping for Failure {
+    fn stop(&self) -> Option<Stop> {
+        match self {
+            Failure::Stopped(stop) => Some(*stop),
+            Failure::Bad => None,
+        }
+    }
 }

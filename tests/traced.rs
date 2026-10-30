@@ -2,16 +2,19 @@ use std::fmt::{Debug, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use inflight::{Progress, Scope, Traced, Vocabulary};
+use inflight::{run, Reports, Traced};
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Metadata, Subscriber};
 
-struct Test;
+#[derive(Debug)]
+enum Part {
+    Block,
+    Run,
+}
 
-impl Vocabulary for Test {
-    type Scope = &'static str;
-    type Event<'a> = &'a [u32];
+impl Reports for Part {
+    type Event = Vec<u32>;
 }
 
 /// What a subscriber saw: each span with its parent, each event with its span.
@@ -62,18 +65,16 @@ fn scopes_become_nested_spans_and_reports_their_events() {
     let capture = Capture::default();
     tracing::subscriber::with_default(capture.clone(), || {
         let call = tracing::info_span!("call");
-        let traced = Traced::new(call);
-        let root = Scope::<Test>::root(&traced);
-        let block = root.open(&"block");
-        let run = block.open(&"run");
-        run.event(|| &[1, 2]);
-        run.progress(Progress {
-            done: 2,
-            total: None,
+        let traced = Traced(call);
+        run(&traced, |call| {
+            call.within(Part::Block, |block| {
+                block.within(Part::Run, |run| {
+                    run.event(|| vec![1, 2]);
+                    run.progress(2, None);
+                    Ok(())
+                })
+            })
         });
-        run.close();
-        block.close();
-        root.close();
     });
     let spans = capture.0.spans.lock().unwrap().clone();
     let events = capture.0.events.lock().unwrap().clone();
@@ -83,8 +84,8 @@ fn scopes_become_nested_spans_and_reports_their_events() {
         panic!("three spans: {spans:?}");
     };
     assert_eq!((block_parent, run_parent), (call, block));
-    assert!(block_fields.contains("scope=\"block\""), "{block_fields}");
-    assert!(run_fields.contains("scope=\"run\""), "{run_fields}");
+    assert!(block_fields.contains("scope=Block"), "{block_fields}");
+    assert!(run_fields.contains("scope=Run"), "{run_fields}");
     let in_run: Vec<_> = events
         .iter()
         .filter(|(span, _)| *span == Some(*run))

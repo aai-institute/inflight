@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 
-use crate::{Closed, Observer, Progress, Vocabulary};
+use crate::{Closed, Observer, Opened, Progress, Reports, Within};
 
 /// What a [`Forward`] sends; scope `0` is the call itself.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Message<S, R> {
+pub enum Message<S: Reports> {
     /// A scope opened inside `parent`.
     Opened {
         /// The new scope.
@@ -23,12 +24,12 @@ pub enum Message<S, R> {
         /// How far it got.
         progress: Progress,
     },
-    /// A scope's event, as `keep` turned it into an `R`.
+    /// A scope's event.
     Event {
         /// The scope.
         id: u64,
         /// What happened.
-        event: R,
+        event: S::Event,
     },
     /// A scope ended.
     Closed {
@@ -39,38 +40,51 @@ pub enum Message<S, R> {
     },
 }
 
-/// Sends what a call reports to its [`Outbox`], each event as `keep` turns it into an `R`.
+/// Sends what a call of any vocabulary `S` reads as [`Within`] reports to its [`Outbox`].
 #[derive(Debug)]
-pub struct Forward<F, S, R> {
-    keep: F,
-    ids: AtomicU64,
-    sender: Sender<Message<S, R>>,
+pub struct Forward<S: Reports> {
+    // Shared by the call's scopes, so each gets its own id.
+    ids: Arc<AtomicU64>,
+    id: u64,
+    sender: Sender<Message<S>>,
 }
 
 /// Receives what a [`Forward`] sent, on whichever thread drains it.
 #[derive(Debug)]
-pub struct Outbox<S, R>(Receiver<Message<S, R>>);
+pub struct Outbox<S: Reports>(Receiver<Message<S>>);
 
-impl<F, S, R> Forward<F, S, R> {
+impl<S: Reports> Forward<S> {
     /// A forward and the outbox it sends to.
-    pub fn new(keep: F) -> (Self, Outbox<S, R>) {
+    pub fn new() -> (Self, Outbox<S>) {
         let (sender, receiver) = mpsc::channel();
         let forward = Self {
-            keep,
-            ids: AtomicU64::new(1),
+            ids: Arc::new(AtomicU64::new(1)),
+            id: 0,
             sender,
         };
         (forward, Outbox(receiver))
     }
 }
 
-impl<S, R> Outbox<S, R> {
+impl<S: Reports> Outbox<S> {
     /// Hands over everything sent so far, in order, but of each scope's progress only the latest.
-    pub fn drain<E>(
-        &self,
-        mut deliver: impl FnMut(Message<S, R>) -> Result<(), E>,
+    pub fn drain<E>(&self, deliver: impl FnMut(Message<S>) -> Result<(), E>) -> Result<(), E> {
+        Self::deliver(self.0.try_iter().collect(), deliver)
+    }
+
+    /// As [`drain`](Self::drain), waiting for each next message, until every [`Forward`] is dropped.
+    pub fn follow<E>(&self, mut deliver: impl FnMut(Message<S>) -> Result<(), E>) -> Result<(), E> {
+        while let Ok(first) = self.0.recv() {
+            let sent = std::iter::once(first).chain(self.0.try_iter()).collect();
+            Self::deliver(sent, &mut deliver)?;
+        }
+        Ok(())
+    }
+
+    fn deliver<E>(
+        sent: Vec<Message<S>>,
+        mut deliver: impl FnMut(Message<S>) -> Result<(), E>,
     ) -> Result<(), E> {
-        let sent: Vec<_> = self.0.try_iter().collect();
         let mut latest = HashMap::new();
         for (k, message) in sent.iter().enumerate() {
             if let Message::Progress { id, .. } = message {
@@ -87,51 +101,29 @@ impl<S, R> Outbox<S, R> {
     }
 }
 
-// One scope's sending end; scope ids come from the call's counter.
-struct Sending<'f, F, S, R> {
-    keep: &'f F,
-    ids: &'f AtomicU64,
-    id: u64,
-    sender: Sender<Message<S, R>>,
-}
-
-impl<'f, F, S, R> Sending<'f, F, S, R> {
+impl<S: Reports> Forward<S> {
     // A dropped outbox only means nobody listens any more.
-    fn send(&self, message: Message<S, R>) {
+    fn send(&self, message: Message<S>) {
         let _ = self.sender.send(message);
     }
+}
 
-    fn open<V>(&self, scope: &V::Scope) -> Option<Box<dyn Observer<V> + 'f>>
-    where
-        V: Vocabulary<Scope = S>,
-        S: Clone + Send + 'f,
-        F: for<'e> Fn(&V::Event<'e>) -> R + Sync,
-        R: Send + 'f,
-    {
+impl<V: Reports, S: Within<V> + Send> Observer<V> for Forward<S>
+where
+    S::Event: Send,
+{
+    fn open(&self, scope: &V) -> Opened<'_, V> {
         let id = self.ids.fetch_add(1, Ordering::Relaxed);
         self.send(Message::Opened {
             id,
             parent: self.id,
-            scope: scope.clone(),
+            scope: S::scope(scope),
         });
-        Some(Box::new(Sending {
-            keep: self.keep,
-            ids: self.ids,
+        Opened::With(Box::new(Forward {
+            ids: Arc::clone(&self.ids),
             id,
             sender: self.sender.clone(),
         }))
-    }
-}
-
-impl<V, F, R> Observer<V> for Sending<'_, F, V::Scope, R>
-where
-    V: Vocabulary,
-    V::Scope: Clone + Send,
-    F: for<'e> Fn(&V::Event<'e>) -> R + Sync,
-    R: Send,
-{
-    fn open(&self, scope: &V::Scope) -> Option<Box<dyn Observer<V> + '_>> {
-        Sending::open::<V>(self, scope)
     }
     fn progress(&self, progress: Progress) {
         self.send(Message::Progress {
@@ -139,48 +131,15 @@ where
             progress,
         });
     }
-    fn event(&self, event: &V::Event<'_>) {
-        self.send(Message::Event {
-            id: self.id,
-            event: (self.keep)(event),
-        });
+    fn event(&self, event: &V::Event) {
+        if let Some(event) = S::event(event) {
+            self.send(Message::Event { id: self.id, event });
+        }
     }
     fn closed(&self, closed: Closed) {
         self.send(Message::Closed {
             id: self.id,
             closed,
         });
-    }
-}
-
-impl<F, S, R> Forward<F, S, R> {
-    fn call(&self) -> Sending<'_, F, S, R> {
-        Sending {
-            keep: &self.keep,
-            ids: &self.ids,
-            id: 0,
-            sender: self.sender.clone(),
-        }
-    }
-}
-
-impl<V, F, R> Observer<V> for Forward<F, V::Scope, R>
-where
-    V: Vocabulary,
-    V::Scope: Clone + Send,
-    F: for<'e> Fn(&V::Event<'e>) -> R + Sync,
-    R: Send,
-{
-    fn open(&self, scope: &V::Scope) -> Option<Box<dyn Observer<V> + '_>> {
-        self.call().open::<V>(scope)
-    }
-    fn progress(&self, progress: Progress) {
-        Observer::<V>::progress(&self.call(), progress);
-    }
-    fn event(&self, event: &V::Event<'_>) {
-        Observer::<V>::event(&self.call(), event);
-    }
-    fn closed(&self, closed: Closed) {
-        Observer::<V>::closed(&self.call(), closed);
     }
 }

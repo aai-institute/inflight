@@ -1,20 +1,18 @@
-use inflight::{Closed, Ended, Forward, Message, Progress, Scope, Vocabulary};
+use inflight::{run, Closed, Ended, Forward, Message, Outcome, Progress, Reports, Scope, Stop};
 
-struct Test;
+#[derive(Clone, Debug, PartialEq)]
+struct Named(&'static str);
 
-impl Vocabulary for Test {
-    type Scope = &'static str;
-    type Event<'a> = &'a [u32];
+impl Reports for Named {
+    type Event = Vec<u32>;
 }
 
-type Sent = Message<&'static str, Vec<u32>>;
+type Sent = Message<Named>;
 
-type Outbox = inflight::Outbox<&'static str, Vec<u32>>;
+type Outbox = inflight::Outbox<Named>;
 
-type Keep = fn(&&[u32]) -> Vec<u32>;
-
-fn forward() -> (Forward<Keep, &'static str, Vec<u32>>, Outbox) {
-    Forward::new(|event| event.to_vec())
+fn forward() -> (Forward<Named>, Outbox) {
+    Forward::new()
 }
 
 fn drained(outbox: &Outbox) -> Vec<Sent> {
@@ -48,16 +46,15 @@ fn progress(done: u64) -> Progress {
 #[test]
 fn a_drain_keeps_the_order_and_only_the_latest_progress() {
     let (forward, outbox) = forward();
-    {
-        let call = Scope::<Test>::root(&forward);
-        let block = call.open(&"block");
-        for done in 1..=3 {
-            block.progress(progress(done));
-        }
-        block.event(|| &[9]);
-        block.close();
-        call.close();
-    }
+    run(&forward, |call| {
+        call.within(Named("block"), |block| {
+            for done in 1..=3 {
+                block.progress(done, Some(3));
+            }
+            block.event(|| vec![9]);
+            Ok(())
+        })
+    });
     let sent = drained(&outbox);
     assert_eq!(
         sent[..3],
@@ -65,7 +62,7 @@ fn a_drain_keeps_the_order_and_only_the_latest_progress() {
             Message::Opened {
                 id: 1,
                 parent: 0,
-                scope: "block"
+                scope: Named("block")
             },
             Message::Progress {
                 id: 1,
@@ -87,31 +84,36 @@ fn a_drain_keeps_the_order_and_only_the_latest_progress() {
 #[test]
 fn each_drain_delivers_the_progress_since_the_last() {
     let (forward, outbox) = forward();
-    let call = Scope::<Test>::root(&forward);
-    call.progress(progress(1));
-    assert_eq!(
-        drained(&outbox),
-        [Message::Progress {
-            id: 0,
-            progress: progress(1)
-        }]
-    );
-    call.progress(progress(2));
-    assert_eq!(
-        drained(&outbox),
-        [Message::Progress {
-            id: 0,
-            progress: progress(2)
-        }]
-    );
+    let outcome = run(&forward, |call: &Scope<'_, Named>| {
+        call.progress(1, Some(3));
+        assert_eq!(
+            drained(&outbox),
+            [Message::Progress {
+                id: 0,
+                progress: progress(1)
+            }]
+        );
+        call.progress(2, Some(3));
+        assert_eq!(
+            drained(&outbox),
+            [Message::Progress {
+                id: 0,
+                progress: progress(2)
+            }]
+        );
+        Ok::<_, Stop>(())
+    });
+    assert_eq!(outcome, Outcome::Completed(()));
 }
 
 #[test]
 fn a_delivery_error_ends_the_drain() {
     let (forward, outbox) = forward();
-    let call = Scope::<Test>::root(&forward);
-    call.event(|| &[1]);
-    call.event(|| &[2]);
+    run(&forward, |call: &Scope<'_, Named>| {
+        call.event(|| vec![1]);
+        call.event(|| vec![2]);
+        Ok(())
+    });
     let mut delivered = 0;
     let result = outbox.drain(|_| {
         delivered += 1;

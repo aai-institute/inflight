@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crate::{Control, Flag, Stop};
+use crate::{Flag, Stop};
 
 /// Stops once the process's resident memory passes a cap; a thread samples it, so a check stays one load.
 #[derive(Debug)]
@@ -43,16 +43,15 @@ impl MemoryCap {
             sampler: Some(sampler),
         })
     }
+
+    /// `Break` once a sample passed the cap.
+    pub fn check(&self) -> ControlFlow<Stop> {
+        self.over.check()
+    }
 }
 
 fn resident() -> Option<usize> {
     memory_stats::memory_stats().map(|stats| stats.physical_mem)
-}
-
-impl Control for MemoryCap {
-    fn check(&self) -> ControlFlow<Stop> {
-        self.over.check()
-    }
 }
 
 impl Drop for MemoryCap {
