@@ -6,12 +6,14 @@ use std::ops::ControlFlow;
 
 mod controls;
 mod latched;
+#[cfg(feature = "memory")]
 mod memory;
 #[cfg(feature = "pyo3")]
 mod python;
 
 pub use controls::{Deadline, Flag};
 pub use latched::Latched;
+#[cfg(feature = "memory")]
 pub use memory::MemoryCap;
 #[cfg(feature = "pyo3")]
 pub use python::interruptible;

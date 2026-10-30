@@ -11,14 +11,19 @@ repository = "https://github.com/aai-institute/inflight"
 categories = ["concurrency"]
 
 [dependencies]
-memory-stats = { version = "1.2", features = ["always_use_statm"] }
+memory-stats = { version = "1.2", features = ["always_use_statm"], optional = true }
 pyo3 = { version = "0.29", optional = true }
 
 [features]
+memory = ["dep:memory-stats"]
 pyo3 = ["dep:pyo3"]
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[[test]]
+name = "memory"
+required-features = ["memory"]
 
 [[test]]
 name = "signal"

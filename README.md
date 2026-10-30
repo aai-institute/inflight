@@ -44,7 +44,7 @@ let cancel = Flag::new();                      // raise from another thread: can
 let outcome = solve(&(&cancel, Deadline::after(Duration::from_secs(30))));
 ```
 
-## Memory cap
+## Memory cap (`memory` feature)
 
 `MemoryCap` stops once the process's resident memory passes a byte limit. A background thread samples it at a fixed interval, so a check costs one atomic load. It is a soft cap: memory can grow past it until the computation's next safe point. `start` returns `None` where the platform does not report resident memory.
 
