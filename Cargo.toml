@@ -1,0 +1,20 @@
+[package]
+name = "inflight"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+authors = ["Kristof Schröder <k.schroeder@appliedai-institute.de>"]
+license = "MIT"
+readme = "README.md"
+description = "Stop a running computation at the safe points it chooses, and learn why it stopped"
+repository = "https://github.com/aai-institute/inflight"
+categories = ["concurrency"]
+
+[dependencies]
+pyo3 = { version = "0.29", optional = true }
+
+[features]
+pyo3 = ["dep:pyo3"]
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -1,0 +1,16 @@
+[workspace]
+name = "inflight"
+channels = ["conda-forge"]
+platforms = ["linux-64", "win-64", "osx-arm64", "osx-64"]
+
+[dependencies]
+rust = ">=1.85"
+# The pyo3 feature's build reads its interpreter config from this python.
+python = ">=3.11,<3.14"
+pre-commit = ">=4"
+
+[tasks]
+fmt = "cargo fmt --all"
+lint = "cargo clippy --all-targets --all-features -- -D warnings"
+# Test binaries link libpython once the pyo3 feature is on; the loader must find pixi's.
+test = { cmd = "cargo test --all-features", env = { DYLD_FALLBACK_LIBRARY_PATH = "$CONDA_PREFIX/lib", LD_LIBRARY_PATH = "$CONDA_PREFIX/lib" } }
