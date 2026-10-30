@@ -15,23 +15,40 @@ pub fn interruptible<T: Send>(
     py: Python<'_>,
     work: impl FnOnce(&dyn Control) -> T + Send,
 ) -> PyResult<T> {
-    let (signal, done, main) = (Flag::new(), AtomicBool::new(false), thread::current());
+    interruptible_with(py, |_| Ok(()), work)
+}
+
+/// As [`interruptible`], and runs `on_wake` on the main thread after each signal check and once after `work` ends; its error stops `work` too and is raised.
+pub fn interruptible_with<T: Send>(
+    py: Python<'_>,
+    mut on_wake: impl FnMut(Python<'_>) -> PyResult<()>,
+    work: impl FnOnce(&dyn Control) -> T + Send,
+) -> PyResult<T> {
+    let (stop, done, main) = (Flag::new(), AtomicBool::new(false), thread::current());
     thread::scope(|scope| {
         let worker = scope.spawn(|| {
-            let result = work(&signal);
+            let result = work(&stop);
             done.store(true, Ordering::Release);
             main.unpark();
             result
         });
         let mut raised = Ok(());
-        while !done.load(Ordering::Acquire) {
-            py.detach(|| thread::park_timeout(SIGNAL_POLL));
+        loop {
+            // Read before waking, so the last wake sees everything `work` reported.
+            let finished = done.load(Ordering::Acquire);
             if raised.is_ok() {
-                raised = py.check_signals();
-                if raised.is_err() {
-                    signal.raise(Stop::Signal);
-                }
+                raised = match py.check_signals() {
+                    Err(signal) => {
+                        stop.raise(Stop::Signal);
+                        Err(signal)
+                    }
+                    Ok(()) => on_wake(py).inspect_err(|_| stop.raise(Stop::Requested)),
+                };
             }
+            if finished {
+                break;
+            }
+            py.detach(|| thread::park_timeout(SIGNAL_POLL));
         }
         let result = worker
             .join()

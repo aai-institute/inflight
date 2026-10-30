@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 
 use inflight::{
-    Checked, Closed, Control, Ended, Flag, Observer, Progress, Record, Recorder, Scope, Stop,
+    Checked, Closed, Control, Ended, Flag, Nest, Observer, Progress, Record, Recorder, Scope, Stop,
     Vocabulary,
 };
 
@@ -223,4 +223,110 @@ fn a_pair_hears_both_and_asks_the_first_first() {
     for record in [left.into_record(), right.into_record()] {
         assert_eq!(record.children[0].1.events, [vec![5]]);
     }
+}
+
+/// An outer computation that nests `Test` runs, as within nests approx-chol's builds.
+struct Outer;
+
+#[derive(Clone, Debug, PartialEq)]
+enum OuterScope {
+    Rung(u32),
+    Inner(&'static str),
+}
+
+enum OuterEvent<'a> {
+    Iteration,
+    Inner(&'a [u32]),
+}
+
+impl Vocabulary for Outer {
+    type Scope = OuterScope;
+    type Event<'a> = OuterEvent<'a>;
+}
+
+impl From<&&'static str> for OuterScope {
+    fn from(scope: &&'static str) -> Self {
+        OuterScope::Inner(scope)
+    }
+}
+
+impl<'r, 'a> From<&'r &'a [u32]> for OuterEvent<'r> {
+    fn from(event: &'r &'a [u32]) -> Self {
+        OuterEvent::Inner(event)
+    }
+}
+
+type OuterRecord = Record<OuterScope, String>;
+
+fn outer_recorder() -> Recorder<impl Fn(&OuterEvent<'_>) -> String + Sync, OuterScope, String> {
+    Recorder::new(|event: &OuterEvent<'_>| match event {
+        OuterEvent::Iteration => "Iteration".to_owned(),
+        OuterEvent::Inner(inner) => format!("Inner({inner:?})"),
+    })
+}
+
+fn outer_ended(record: &OuterRecord) -> Option<Ended> {
+    record.closed.map(|closed| closed.ended)
+}
+
+#[test]
+fn a_nested_call_joins_the_outer_tree() {
+    let recorder = outer_recorder();
+    {
+        let root = Scope::<Outer>::root(&recorder);
+        let rung = root.open(&OuterScope::Rung(1));
+        rung.event(|| OuterEvent::Iteration);
+        {
+            let nest = Nest::new(&rung);
+            let inner = Scope::<Test>::root(&nest);
+            let block = inner.open(&"block");
+            block.event(|| &[4, 2]);
+            block.progress(Progress {
+                done: 1,
+                total: Some(1),
+            });
+            block.close();
+            inner.close();
+        }
+        rung.close();
+        root.close();
+    }
+    let record = recorder.into_record();
+    let (scope, rung) = &record.children[0];
+    assert_eq!(*scope, OuterScope::Rung(1));
+    assert_eq!(rung.events, ["Iteration"]);
+    assert_eq!(outer_ended(rung), Some(Ended::Completed));
+    let (scope, block) = &rung.children[0];
+    assert_eq!(*scope, OuterScope::Inner("block"));
+    assert_eq!(block.events, ["Inner([4, 2])"]);
+    assert_eq!(block.progress.map(|p| p.done), Some(1));
+    assert_eq!(outer_ended(block), Some(Ended::Completed));
+}
+
+#[test]
+fn a_nested_stop_stops_the_outer_call() {
+    let recorder = outer_recorder();
+    let flag = Flag::new();
+    let watch = (&flag, &recorder);
+    {
+        let root = Scope::<Outer>::root(&watch);
+        let rung = root.open(&OuterScope::Rung(2));
+        let nest = Nest::new(&rung);
+        let inner = Scope::<Test>::root(&nest);
+        let block = inner.open(&"block");
+        flag.raise(Stop::Signal);
+        assert_eq!(block.check(), ControlFlow::Break(Stop::Signal));
+        drop(block);
+        drop(inner);
+        assert_eq!(
+            root.stopped(),
+            Some(Stop::Signal),
+            "the inner stop latched the outer call"
+        );
+    }
+    let record = recorder.into_record();
+    let (_, rung) = &record.children[0];
+    let (_, block) = &rung.children[0];
+    assert_eq!(outer_ended(block), Some(Ended::Stopped(Stop::Signal)));
+    assert_eq!(outer_ended(rung), Some(Ended::Stopped(Stop::Signal)));
 }

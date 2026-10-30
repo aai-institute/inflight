@@ -1,4 +1,5 @@
 use std::ops::ControlFlow;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -315,5 +316,101 @@ impl<V: Vocabulary> std::fmt::Debug for Scope<'_, V> {
             .field("heard", &self.is_heard())
             .field("stopped", &self.stopped())
             .finish_non_exhaustive()
+    }
+}
+
+/// An inner computation's observer inside an outer scope: its scopes and events join the outer vocabulary, and its checks and stops the outer call's.
+pub struct Nest<'n, 's, O: Vocabulary>(&'n Scope<'s, O>);
+
+impl<'n, 's, O: Vocabulary> Nest<'n, 's, O> {
+    /// Inside `scope`, which the outer computation still closes itself.
+    pub fn new(scope: &'n Scope<'s, O>) -> Self {
+        Self(scope)
+    }
+}
+
+impl<I, O> Observer<I> for Nest<'_, '_, O>
+where
+    I: Vocabulary,
+    O: Vocabulary,
+    for<'a> O::Scope: From<&'a I::Scope>,
+    for<'r, 'a> O::Event<'r>: From<&'r I::Event<'a>>,
+{
+    fn check(&self) -> ControlFlow<Stop> {
+        Control::check(self.0)
+    }
+    fn open(&self, scope: &I::Scope) -> Option<Box<dyn Observer<I> + '_>> {
+        nest::<I, O>(self.0, scope)
+    }
+    fn progress(&self, progress: Progress) {
+        self.0.progress(progress);
+    }
+    fn event(&self, event: &I::Event<'_>) {
+        self.0.event(|| O::Event::from(event));
+    }
+}
+
+// An inner scope as an outer one, which closes as completed only if the inner one did.
+struct Nested<'n, O: Vocabulary> {
+    scope: Option<Scope<'n, O>>,
+    completed: AtomicBool,
+}
+
+fn nest<'n, I, O>(outer: &'n Scope<'_, O>, scope: &I::Scope) -> Option<Box<dyn Observer<I> + 'n>>
+where
+    I: Vocabulary,
+    O: Vocabulary,
+    for<'a> O::Scope: From<&'a I::Scope>,
+    for<'r, 'a> O::Event<'r>: From<&'r I::Event<'a>>,
+{
+    let scope = outer.open(&O::Scope::from(scope));
+    match scope.is_heard() {
+        true => Some(Box::new(Nested {
+            scope: Some(scope),
+            completed: AtomicBool::new(false),
+        })),
+        false => None,
+    }
+}
+
+impl<O: Vocabulary> Nested<'_, O> {
+    fn scope(&self) -> &Scope<'_, O> {
+        self.scope.as_ref().expect("taken only on drop")
+    }
+}
+
+impl<I, O> Observer<I> for Nested<'_, O>
+where
+    I: Vocabulary,
+    O: Vocabulary,
+    for<'a> O::Scope: From<&'a I::Scope>,
+    for<'r, 'a> O::Event<'r>: From<&'r I::Event<'a>>,
+{
+    fn check(&self) -> ControlFlow<Stop> {
+        Control::check(self.scope())
+    }
+    fn open(&self, scope: &I::Scope) -> Option<Box<dyn Observer<I> + '_>> {
+        nest::<I, O>(self.scope(), scope)
+    }
+    fn progress(&self, progress: Progress) {
+        self.scope().progress(progress);
+    }
+    fn event(&self, event: &I::Event<'_>) {
+        self.scope().event(|| O::Event::from(event));
+    }
+    fn closed(&self, closed: Closed) {
+        if closed.ended == Ended::Completed {
+            self.completed.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+impl<O: Vocabulary> Drop for Nested<'_, O> {
+    fn drop(&mut self) {
+        if let Some(scope) = self.scope.take() {
+            if *self.completed.get_mut() {
+                scope.close();
+            }
+        }
     }
 }

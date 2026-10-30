@@ -44,6 +44,29 @@ let cancel = Flag::new();                      // raise from another thread: can
 let outcome = solve(&(&cancel, Deadline::after(Duration::from_secs(30))));
 ```
 
+## Observation
+
+A computation names what it reports in its own `Vocabulary`: a scope type (a block, a run) and an event type. It takes one `&dyn Observer<V>`, which hears scopes, progress and events and answers the checks, so a rule that decides from what it observes is one object.
+
+```rust
+pub fn solve(observer: &(impl Observer<Solve> + ?Sized)) -> Outcome<Solution> {
+    let call = Scope::root(&observer);
+    let run = call.open(&SolveScope::Run);
+    run.progress(Progress { done, total: Some(n) });
+    run.event(|| SolveEvent::Residual(r));      // built only if someone listens
+    if run.check().is_break() { /* stop here */ }
+    run.close();                                // dropped instead: stopped, failed or unwound
+    // ...
+}
+```
+
+`inflight`'s controls are observers of any vocabulary; a caller's own `Control` goes in `Checked`. Pairs combine observers. Also included:
+
+- `Recorder` keeps the scope tree with its events and ends.
+- `Nest::new(&scope)` hands an inner computation an observer inside an outer scope: its scopes and events join the outer vocabulary through `From`, and its stops stop the outer call.
+- `Forward` sends everything through a channel; its `Outbox` drains in order, each scope's progress coalesced to the latest.
+- `Traced` (`tracing` feature) turns scopes into spans and the rest into events.
+
 ## Memory cap (`memory` feature)
 
 `MemoryCap` stops once the process's resident memory passes a byte limit. A background thread samples it at a fixed interval, so a check costs one atomic load. It is a soft cap: memory can grow past it until the computation's next safe point. `start` returns `None` where the platform does not report resident memory.
@@ -63,6 +86,8 @@ let outcome = solve(&cap);
 ```rust
 let outcome = inflight::interruptible(py, |signal| solve(&signal))?;
 ```
+
+`interruptible_with` also runs a hook on the main thread at every wake and once after the work ends, such as draining an `Outbox` into a Python callback. If the hook raises, the work stops and that exception is raised.
 
 `Stop` converts to `PyErr`: `Signal` to `KeyboardInterrupt`, `Deadline` to `TimeoutError`, `Memory` to `MemoryError`, `Requested` to `InterruptedError`.
 

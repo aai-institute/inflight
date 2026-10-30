@@ -5,6 +5,7 @@
 use std::ops::ControlFlow;
 
 mod controls;
+mod forward;
 mod latched;
 #[cfg(feature = "memory")]
 mod memory;
@@ -12,15 +13,20 @@ mod observe;
 #[cfg(feature = "pyo3")]
 mod python;
 mod recorder;
+#[cfg(feature = "tracing")]
+mod traced;
 
 pub use controls::{Deadline, Flag};
+pub use forward::{Forward, Message, Outbox};
 pub use latched::Latched;
 #[cfg(feature = "memory")]
 pub use memory::MemoryCap;
-pub use observe::{Checked, Closed, Ended, Observer, Progress, Scope, Vocabulary};
+pub use observe::{Checked, Closed, Ended, Nest, Observer, Progress, Scope, Vocabulary};
 #[cfg(feature = "pyo3")]
-pub use python::interruptible;
+pub use python::{interruptible, interruptible_with};
 pub use recorder::{Record, Recorder};
+#[cfg(feature = "tracing")]
+pub use traced::Traced;
 
 /// Why a call stopped.
 #[non_exhaustive]
