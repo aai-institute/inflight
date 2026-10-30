@@ -2,29 +2,30 @@
 
 #![deny(missing_docs)]
 
-use std::ops::ControlFlow;
-
 mod controls;
 mod forward;
-mod latched;
 #[cfg(feature = "memory")]
 mod memory;
 mod observe;
 #[cfg(feature = "pyo3")]
 mod python;
 mod recorder;
+mod standard;
 #[cfg(feature = "tracing")]
 mod traced;
 
 pub use controls::{Deadline, Flag};
 pub use forward::{Forward, Message, Outbox};
-pub use latched::Latched;
 #[cfg(feature = "memory")]
 pub use memory::MemoryCap;
-pub use observe::{Checked, Closed, Ended, Nest, Observer, Progress, Scope, Vocabulary};
+pub use observe::{
+    hear, run, try_run, Closed, Ended, Every, Nest, Observer, Opened, Progress, Reports, Scope,
+    Within,
+};
 #[cfg(feature = "pyo3")]
 pub use python::{interruptible, interruptible_with};
-pub use recorder::{Record, Recorder};
+pub use recorder::Record;
+pub use standard::{IterationLimit, Standard};
 #[cfg(feature = "tracing")]
 pub use traced::Traced;
 
@@ -40,32 +41,19 @@ pub enum Stop {
     Memory,
     /// The caller asked for it.
     Requested,
+    /// A rule the call ran under, by its name.
+    Rule(&'static str),
 }
 
-/// Asked at a computation's safe points whether to go on.
-pub trait Control: Sync {
-    /// `Break` ends the call at this safe point.
-    fn check(&self) -> ControlFlow<Stop>;
+/// An error that is either a call's stop or the algorithm's own.
+pub trait Stopping: From<Stop> {
+    /// The stop this error carries, however wrapped; `None` for the algorithm's own error.
+    fn stop(&self) -> Option<Stop>;
 }
 
-/// Never stops.
-impl Control for () {
-    fn check(&self) -> ControlFlow<Stop> {
-        ControlFlow::Continue(())
-    }
-}
-
-impl<C: Control + ?Sized> Control for &C {
-    fn check(&self) -> ControlFlow<Stop> {
-        (**self).check()
-    }
-}
-
-/// Stops when either does; the first is asked first.
-impl<A: Control, B: Control> Control for (A, B) {
-    fn check(&self) -> ControlFlow<Stop> {
-        self.0.check()?;
-        self.1.check()
+impl Stopping for Stop {
+    fn stop(&self) -> Option<Stop> {
+        Some(*self)
     }
 }
 
@@ -89,6 +77,37 @@ impl<R, S> Outcome<R, S> {
         match self {
             Self::Completed(result) => Some(result),
             Self::Stopped { .. } => None,
+        }
+    }
+
+    /// The result mapped by `f`; a stop and its residue pass through.
+    pub fn map<T>(self, f: impl FnOnce(R) -> T) -> Outcome<T, S> {
+        match self {
+            Self::Completed(result) => Outcome::Completed(f(result)),
+            Self::Stopped { reason, residue } => Outcome::Stopped { reason, residue },
+        }
+    }
+}
+
+impl<R> Outcome<R> {
+    /// The result, or the stop, so that `?` carries an inner call's stop out.
+    pub fn into_result(self) -> Result<R, Stop> {
+        match self {
+            Self::Completed(result) => Ok(result),
+            Self::Stopped { reason, .. } => Err(reason),
+        }
+    }
+}
+
+impl Outcome<()> {
+    /// `state` as the result, or as the residue a stopped call resumes from.
+    pub fn holding<T>(self, state: T) -> Outcome<T, T> {
+        match self {
+            Self::Completed(()) => Outcome::Completed(state),
+            Self::Stopped { reason, .. } => Outcome::Stopped {
+                reason,
+                residue: state,
+            },
         }
     }
 }

@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use crate::{Control, Stop};
+use crate::Stop;
 
 /// Raised from outside the call; the first reason sticks.
 #[derive(Debug, Default)]
@@ -18,10 +18,9 @@ impl Flag {
     pub fn raise(&self, reason: Stop) {
         let _ = self.0.set(reason);
     }
-}
 
-impl Control for Flag {
-    fn check(&self) -> ControlFlow<Stop> {
+    /// `Break` once raised.
+    pub fn check(&self) -> ControlFlow<Stop> {
         match self.0.get() {
             Some(&reason) => ControlFlow::Break(reason),
             None => ControlFlow::Continue(()),
@@ -43,10 +42,9 @@ impl Deadline {
     pub fn after(budget: Duration) -> Self {
         Self(Instant::now().checked_add(budget))
     }
-}
 
-impl Control for Deadline {
-    fn check(&self) -> ControlFlow<Stop> {
+    /// `Break` once its instant has passed.
+    pub fn check(&self) -> ControlFlow<Stop> {
         match self.0 {
             Some(instant) if Instant::now() >= instant => ControlFlow::Break(Stop::Deadline),
             _ => ControlFlow::Continue(()),

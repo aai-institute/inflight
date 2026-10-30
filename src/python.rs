@@ -5,16 +5,13 @@ use std::time::Duration;
 use pyo3::exceptions::{PyInterruptedError, PyKeyboardInterrupt, PyMemoryError, PyTimeoutError};
 use pyo3::{PyErr, PyResult, Python};
 
-use crate::{Control, Flag, Stop};
+use crate::{Flag, Stop};
 
 /// How long a signal may wait for the main thread to notice it.
 const SIGNAL_POLL: Duration = Duration::from_millis(50);
 
 /// Runs `work` beside the main thread with the GIL released; an exception from a signal handler stops it and is raised.
-pub fn interruptible<T: Send>(
-    py: Python<'_>,
-    work: impl FnOnce(&dyn Control) -> T + Send,
-) -> PyResult<T> {
+pub fn interruptible<T: Send>(py: Python<'_>, work: impl FnOnce(&Flag) -> T + Send) -> PyResult<T> {
     interruptible_with(py, |_| Ok(()), work)
 }
 
@@ -22,7 +19,7 @@ pub fn interruptible<T: Send>(
 pub fn interruptible_with<T: Send>(
     py: Python<'_>,
     mut on_wake: impl FnMut(Python<'_>) -> PyResult<()>,
-    work: impl FnOnce(&dyn Control) -> T + Send,
+    work: impl FnOnce(&Flag) -> T + Send,
 ) -> PyResult<T> {
     let (stop, done, main) = (Flag::new(), AtomicBool::new(false), thread::current());
     thread::scope(|scope| {
@@ -64,6 +61,7 @@ impl From<Stop> for PyErr {
             Stop::Deadline => PyTimeoutError::new_err("stopped at its deadline"),
             Stop::Memory => PyMemoryError::new_err("stopped at its memory cap"),
             Stop::Requested => PyInterruptedError::new_err("stopped on request"),
+            Stop::Rule(rule) => PyInterruptedError::new_err(format!("stopped by its {rule}")),
         }
     }
 }

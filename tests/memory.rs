@@ -1,7 +1,7 @@
 use std::ops::ControlFlow;
 use std::time::{Duration, Instant};
 
-use inflight::{Control, MemoryCap, Stop};
+use inflight::{MemoryCap, Stop};
 
 const MIB: usize = 1 << 20;
 const INTERVAL: Duration = Duration::from_millis(1);
@@ -21,7 +21,7 @@ fn growing_past_the_cap_stops_a_running_call() {
         "the test process starts below the cap"
     );
     // Ones, not zeros: zeroed pages may stay unmapped and never count as resident.
-    let grown = vec![1u8; 512 * MIB];
+    let grown = std::hint::black_box(vec![1u8; 512 * MIB]);
     let started = Instant::now();
     while cap.check().is_continue() {
         assert!(

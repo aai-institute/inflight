@@ -1,21 +1,22 @@
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::convert::Infallible;
 
-use crate::{Closed, Observer, Progress, Vocabulary};
+use crate::{Closed, Message, Outbox, Progress, Reports};
 
 /// What one scope reported.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Record<S, R> {
+pub struct Record<S: Reports> {
     /// Its events, in order.
-    pub events: Vec<R>,
+    pub events: Vec<S::Event>,
     /// Its last progress.
     pub progress: Option<Progress>,
     /// The scopes opened inside it, in the order they opened.
-    pub children: Vec<(S, Record<S, R>)>,
+    pub children: Vec<(S, Record<S>)>,
     /// Its end; `None` only while it is open.
     pub closed: Option<Closed>,
 }
 
-impl<S, R> Default for Record<S, R> {
+impl<S: Reports> Default for Record<S> {
     fn default() -> Self {
         Self {
             events: Vec::new(),
@@ -26,110 +27,41 @@ impl<S, R> Default for Record<S, R> {
     }
 }
 
-/// Keeps every scope, event and end of a call, each event as `keep` turns it into an `R`.
-#[derive(Debug)]
-pub struct Recorder<F, S, R> {
-    keep: F,
-    record: Mutex<Record<S, R>>,
-}
-
-impl<F, S, R> Recorder<F, S, R> {
-    /// Nothing recorded yet.
-    pub fn new(keep: F) -> Self {
-        Self {
-            keep,
-            record: Mutex::new(Record::default()),
-        }
-    }
-
-    /// The call's record.
-    pub fn into_record(self) -> Record<S, R> {
-        self.record
-            .into_inner()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-}
-
-// Each scope fills its own record and hands it to its slot in the parent's once it closes.
-struct Child<'p, F, S, R> {
-    keep: &'p F,
-    parent: &'p Mutex<Record<S, R>>,
-    slot: usize,
-    record: Mutex<Record<S, R>>,
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-fn open<'p, V, F, R>(
-    keep: &'p F,
-    record: &'p Mutex<Record<V::Scope, R>>,
-    scope: &V::Scope,
-) -> Option<Box<dyn Observer<V> + 'p>>
-where
-    V: Vocabulary,
-    V::Scope: Clone + Send,
-    F: for<'e> Fn(&V::Event<'e>) -> R + Sync,
-    R: Send + 'p,
-{
-    let slot = {
-        let mut parent = lock(record);
-        parent.children.push((scope.clone(), Record::default()));
-        parent.children.len() - 1
-    };
-    Some(Box::new(Child {
-        keep,
-        parent: record,
-        slot,
-        record: Mutex::new(Record::default()),
-    }))
-}
-
-impl<V, F, R> Observer<V> for Recorder<F, V::Scope, R>
-where
-    V: Vocabulary,
-    V::Scope: Clone + Send,
-    F: for<'e> Fn(&V::Event<'e>) -> R + Sync,
-    R: Send,
-{
-    fn open(&self, scope: &V::Scope) -> Option<Box<dyn Observer<V> + '_>> {
-        open::<V, F, R>(&self.keep, &self.record, scope)
-    }
-    fn progress(&self, progress: Progress) {
-        lock(&self.record).progress = Some(progress);
-    }
-    fn event(&self, event: &V::Event<'_>) {
-        let kept = (self.keep)(event);
-        lock(&self.record).events.push(kept);
-    }
-    fn closed(&self, closed: Closed) {
-        lock(&self.record).closed = Some(closed);
+impl<S: Reports> Outbox<S> {
+    /// What was sent and not yet drained, as the call's tree of scopes; to also drain live, record from a second `Forward`.
+    pub fn record(&self) -> Record<S> {
+        let mut records: HashMap<u64, Record<S>> = HashMap::new();
+        let mut opened: HashMap<u64, Vec<(u64, S)>> = HashMap::new();
+        let Ok(()) = self.drain(|message| {
+            match message {
+                Message::Opened { id, parent, scope } => {
+                    opened.entry(parent).or_default().push((id, scope))
+                }
+                Message::Progress { id, progress } => {
+                    records.entry(id).or_default().progress = Some(progress)
+                }
+                Message::Event { id, event } => records.entry(id).or_default().events.push(event),
+                Message::Closed { id, closed } => {
+                    records.entry(id).or_default().closed = Some(closed)
+                }
+            }
+            Ok::<(), Infallible>(())
+        });
+        assemble(0, &mut records, &mut opened)
     }
 }
 
-impl<V, F, R> Observer<V> for Child<'_, F, V::Scope, R>
-where
-    V: Vocabulary,
-    V::Scope: Clone + Send,
-    F: for<'e> Fn(&V::Event<'e>) -> R + Sync,
-    R: Send,
-{
-    fn open(&self, scope: &V::Scope) -> Option<Box<dyn Observer<V> + '_>> {
-        open::<V, F, R>(self.keep, &self.record, scope)
-    }
-    fn progress(&self, progress: Progress) {
-        lock(&self.record).progress = Some(progress);
-    }
-    fn event(&self, event: &V::Event<'_>) {
-        let kept = (self.keep)(event);
-        lock(&self.record).events.push(kept);
-    }
-    fn closed(&self, closed: Closed) {
-        let mut record = std::mem::take(&mut *lock(&self.record));
-        record.closed = Some(closed);
-        lock(self.parent).children[self.slot].1 = record;
-    }
+fn assemble<S: Reports>(
+    id: u64,
+    records: &mut HashMap<u64, Record<S>>,
+    opened: &mut HashMap<u64, Vec<(u64, S)>>,
+) -> Record<S> {
+    let mut record = records.remove(&id).unwrap_or_default();
+    record.children = opened
+        .remove(&id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(child, scope)| (scope, assemble(child, records, opened)))
+        .collect();
+    record
 }
