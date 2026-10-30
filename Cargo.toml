@@ -17,7 +17,7 @@ tracing = { version = "0.1", optional = true, default-features = false }
 
 [features]
 memory = ["dep:memory-stats"]
-pyo3 = ["dep:pyo3"]
+pyo3 = ["dep:pyo3", "memory"]
 tracing = ["dep:tracing"]
 
 [lints.rust]
@@ -30,6 +30,10 @@ required-features = ["memory"]
 [[test]]
 name = "traced"
 required-features = ["tracing"]
+
+[[test]]
+name = "python"
+required-features = ["pyo3"]
 
 [[test]]
 name = "signal"

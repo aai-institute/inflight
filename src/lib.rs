@@ -23,7 +23,7 @@ pub use observe::{
     Within,
 };
 #[cfg(feature = "pyo3")]
-pub use python::{interruptible, interruptible_with};
+pub use python::{interruptible, interruptible_with, Limits, ProgressCallback};
 pub use recorder::Record;
 pub use standard::{IterationLimit, Standard};
 #[cfg(feature = "tracing")]
