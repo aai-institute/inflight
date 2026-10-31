@@ -18,8 +18,11 @@ const SIGNAL_POLL: Duration = Duration::from_millis(50);
 /// How often a memory limit samples resident memory; a check then costs one load.
 const MEMORY_SAMPLE: Duration = Duration::from_millis(10);
 
-/// Runs `work` beside the main thread with the GIL released; an exception from a signal handler stops it and is raised.
-pub fn interruptible<T: Send>(py: Python<'_>, work: impl FnOnce(&Flag) -> T + Send) -> PyResult<T> {
+/// Runs `work` beside the main thread with the GIL released; an exception from a signal handler stops it and is raised before `work`'s own.
+pub fn interruptible<T: Send>(
+    py: Python<'_>,
+    work: impl FnOnce(&Flag) -> PyResult<T> + Send,
+) -> PyResult<T> {
     interruptible_with(py, |_| Ok(()), work)
 }
 
@@ -27,7 +30,7 @@ pub fn interruptible<T: Send>(py: Python<'_>, work: impl FnOnce(&Flag) -> T + Se
 pub fn interruptible_with<T: Send>(
     py: Python<'_>,
     mut on_wake: impl FnMut(Python<'_>) -> PyResult<()>,
-    work: impl FnOnce(&Flag) -> T + Send,
+    work: impl FnOnce(&Flag) -> PyResult<T> + Send,
 ) -> PyResult<T> {
     let (stop, done, main) = (Flag::new(), AtomicBool::new(false), thread::current());
     thread::scope(|scope| {
@@ -58,7 +61,7 @@ pub fn interruptible_with<T: Send>(
         let result = worker
             .join()
             .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-        raised.map(|()| result)
+        raised.and(result)
     })
 }
 

@@ -19,6 +19,7 @@ tracing = { version = "0.1", optional = true, default-features = false }
 memory = ["dep:memory-stats"]
 pyo3 = ["dep:pyo3", "memory"]
 tracing = ["dep:tracing"]
+testing = []
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -26,6 +27,10 @@ unsafe_code = "forbid"
 [[test]]
 name = "memory"
 required-features = ["memory"]
+
+[[test]]
+name = "countdown"
+required-features = ["testing"]
 
 [[test]]
 name = "traced"

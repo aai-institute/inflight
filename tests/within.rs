@@ -100,3 +100,38 @@ fn one_forward_hears_two_vocabularies_with_distinct_ids() {
         .unwrap();
     assert_eq!(opened, [(1, "Solve".into()), (2, "Sweep".into())]);
 }
+
+fn counted(scope: &Scope<'_, Solve>, flag: &inflight::Flag) -> Result<u64, Stop> {
+    scope.within(Solve, |solve| {
+        for k in 0..4 {
+            solve.event(|| k);
+            if k == 2 {
+                flag.raise(Stop::Requested);
+            }
+            solve.check()?;
+        }
+        Ok(4)
+    })
+}
+
+#[test]
+fn a_part_in_another_vocabulary_is_one_call() {
+    let (recorder, outbox) = Forward::<Counted>::new();
+    let flag = inflight::Flag::new();
+    let outcome = run(&(&recorder, &flag), |call: &Scope<'_, Counted>| {
+        call.within_as(Counted::Phase, |phase: &Scope<'_, Solve>| {
+            counted(phase, &flag)
+        })
+    });
+    assert_eq!(
+        outcome,
+        Outcome::Stopped {
+            reason: Stop::Requested,
+            residue: ()
+        }
+    );
+    let record = outbox.record();
+    let (_, phase) = &record.children[0];
+    let (scope, solve) = &phase.children[0];
+    assert_eq!((*scope, &solve.events[..]), (Counted::Solve, &[0, 20][..]));
+}
