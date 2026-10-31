@@ -23,11 +23,11 @@ fn main() {
         let stopped = inflight::interruptible(py, |control| {
             while control.check().is_continue() {
                 if started.elapsed() > Duration::from_secs(5) {
-                    return false;
+                    return Ok(false);
                 }
                 std::thread::sleep(Duration::from_millis(1));
             }
-            true
+            Ok(true)
         });
         let err = stopped.expect_err("the handler's exception is raised");
         assert!(err.is_instance_of::<PyKeyboardInterrupt>(py), "{err}");
@@ -44,10 +44,18 @@ fn main() {
                 seen.extend(received.try_iter());
                 Ok(())
             },
-            |_| sent.send(7).expect("received"),
+            |_| {
+                sent.send(7).expect("received");
+                Ok(())
+            },
         )
         .expect("nothing raises");
         assert_eq!(seen, [7]);
+
+        // The work's own error is raised as it is.
+        let own = inflight::interruptible(py, |_| Err::<(), _>(PyValueError::new_err("own")));
+        let err = own.expect_err("the work's exception is raised");
+        assert!(err.is_instance_of::<PyValueError>(py), "{err}");
 
         // A raising wake stops `work` and its exception is raised.
         let (started, stopped) = (Instant::now(), AtomicBool::new(false));
@@ -60,11 +68,12 @@ fn main() {
             |control| {
                 while control.check().is_continue() {
                     if started.elapsed() > Duration::from_secs(5) {
-                        return;
+                        return Ok(());
                     }
                     std::thread::sleep(Duration::from_millis(1));
                 }
                 stopped.store(true, Ordering::Relaxed);
+                Ok(())
             },
         );
         let err = raised.expect_err("the wake's exception is raised");

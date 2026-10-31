@@ -5,7 +5,7 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::{Deadline, Flag, Outcome, Stop, Stopping};
+use crate::{Deadline, Flag, Interrupted, Outcome, Stop, Stopping};
 
 /// An algorithm's scopes, and the events that happen inside them.
 pub trait Reports: 'static {
@@ -324,6 +324,21 @@ pub fn try_run<S: Reports, R, E: Stopping>(
     }
 }
 
+/// As [`try_run`], for a body whose error is [`Interrupted`]: every stop ends the call as [`Outcome::Stopped`], so only the algorithm's own error comes out.
+pub fn run_fallible<S: Reports, R, E>(
+    observer: &(dyn Observer<S> + '_),
+    body: impl FnOnce(&Scope<'_, S>) -> Result<R, Interrupted<E>>,
+) -> Result<Outcome<R>, E> {
+    match call(observer, body).0 {
+        Ok(result) => Ok(Outcome::Completed(result)),
+        Err(Interrupted::Stop(reason)) => Ok(Outcome::Stopped {
+            reason,
+            residue: (),
+        }),
+        Err(Interrupted::Own(error)) => Err(error),
+    }
+}
+
 // The body's result, and the call's stop if its error carries it.
 fn call<S: Reports, R, E: Stopping>(
     observer: &(dyn Observer<S> + '_),
@@ -364,6 +379,18 @@ impl<'s, S: Reports> Scope<'s, S> {
         let result = body(&child);
         child.close(&result);
         result
+    }
+
+    /// As [`within`](Self::within), for a body in vocabulary `I` that this one reads [`Within`]: its scopes join this tree, and its stops are this call's.
+    pub fn within_as<I: Reports, R, E: Stopping>(
+        &self,
+        scope: S,
+        body: impl FnOnce(&Scope<'_, I>) -> Result<R, E>,
+    ) -> Result<R, E>
+    where
+        S: Within<I>,
+    {
+        self.nest(scope, |nest| call(nest, body).0)
     }
 
     /// As [`within`](Self::within), with `control` asked too: its stop ends only this part, as [`Outcome::Stopped`]; the call's stop is `Err`.

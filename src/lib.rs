@@ -3,6 +3,8 @@
 #![deny(missing_docs)]
 
 mod controls;
+#[cfg(feature = "testing")]
+mod countdown;
 mod forward;
 #[cfg(feature = "memory")]
 mod memory;
@@ -15,12 +17,14 @@ mod standard;
 mod traced;
 
 pub use controls::{Deadline, Flag};
+#[cfg(feature = "testing")]
+pub use countdown::Countdown;
 pub use forward::{Forward, Message, Outbox};
 #[cfg(feature = "memory")]
 pub use memory::MemoryCap;
 pub use observe::{
-    hear, run, try_run, Closed, Ended, Every, Nest, Observer, Opened, Progress, Reports, Scope,
-    Within,
+    hear, run, run_fallible, try_run, Closed, Ended, Every, Nest, Observer, Opened, Progress,
+    Reports, Scope, Within,
 };
 #[cfg(feature = "pyo3")]
 pub use python::{interruptible, interruptible_with, Limits, ProgressCallback};
@@ -54,6 +58,40 @@ pub trait Stopping: From<Stop> {
 impl Stopping for Stop {
     fn stop(&self) -> Option<Stop> {
         Some(*self)
+    }
+}
+
+/// The call's stop, or the algorithm's own error, which then needs no stop of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Interrupted<E> {
+    /// The call stopped.
+    Stop(Stop),
+    /// The algorithm failed.
+    Own(E),
+}
+
+impl<E> Interrupted<E> {
+    /// The own error mapped by `f`; a stop passes through.
+    pub fn map<F>(self, f: impl FnOnce(E) -> F) -> Interrupted<F> {
+        match self {
+            Self::Stop(stop) => Interrupted::Stop(stop),
+            Self::Own(error) => Interrupted::Own(f(error)),
+        }
+    }
+}
+
+impl<E> From<Stop> for Interrupted<E> {
+    fn from(stop: Stop) -> Self {
+        Self::Stop(stop)
+    }
+}
+
+impl<E> Stopping for Interrupted<E> {
+    fn stop(&self) -> Option<Stop> {
+        match self {
+            Self::Stop(stop) => Some(*stop),
+            Self::Own(_) => None,
+        }
     }
 }
 
