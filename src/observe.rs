@@ -309,11 +309,26 @@ pub struct Scope<'s, S: Reports> {
     done: Mutex<u64>,
 }
 
-/// Runs `body` as one call under `observer`; an error carrying the call's stop makes it [`Outcome::Stopped`], any other error wins.
+/// Runs `body` as one call under `observer`; an error carrying the call's stop makes it [`Outcome::Stopped`], any other error wins. A stop for one part of the call belongs in [`Scope::under`].
 pub fn try_run<S: Reports, R, E: Stopping>(
     observer: &(dyn Observer<S> + '_),
     body: impl FnOnce(&Scope<'_, S>) -> Result<R, E>,
 ) -> Result<Outcome<R>, E> {
+    match call(observer, body) {
+        (Ok(result), _) => Ok(Outcome::Completed(result)),
+        (Err(_), Some(reason)) => Ok(Outcome::Stopped {
+            reason,
+            residue: (),
+        }),
+        (Err(error), None) => Err(error),
+    }
+}
+
+// The body's result, and the call's stop if its error carries it.
+fn call<S: Reports, R, E: Stopping>(
+    observer: &(dyn Observer<S> + '_),
+    body: impl FnOnce(&Scope<'_, S>) -> Result<R, E>,
+) -> (Result<R, E>, Option<Stop>) {
     let latch = OnceLock::new();
     let call = Scope {
         listener: Some((Listener::Own(Box::new(observer)), Instant::now())),
@@ -324,14 +339,7 @@ pub fn try_run<S: Reports, R, E: Stopping>(
     };
     let result = body(&call);
     let stopped = call.close(&result);
-    match (result, stopped) {
-        (Ok(result), _) => Ok(Outcome::Completed(result)),
-        (Err(_), Some(reason)) => Ok(Outcome::Stopped {
-            reason,
-            residue: (),
-        }),
-        (Err(error), None) => Err(error),
-    }
+    (result, stopped)
 }
 
 /// As [`try_run`], for a body whose only error is a stop.
@@ -356,6 +364,35 @@ impl<'s, S: Reports> Scope<'s, S> {
         let result = body(&child);
         child.close(&result);
         result
+    }
+
+    /// As [`within`](Self::within), with `control` asked too: its stop ends only this part, as [`Outcome::Stopped`]; the call's stop is `Err`.
+    pub fn under<R, E: Stopping>(
+        &self,
+        scope: S,
+        control: &(dyn Observer<S> + '_),
+        body: impl FnOnce(&Scope<'_, S>) -> Result<R, E>,
+    ) -> Result<Outcome<R>, E> {
+        let part = Part {
+            scope: self.open(&scope),
+            ask: Scope::ask,
+        };
+        match call(&(&part, control), body) {
+            (Ok(result), _) => Ok(Outcome::Completed(result)),
+            // Decided by the stop the error carries, as the call's may latch after the part's.
+            (Err(error), _)
+                if error
+                    .stop()
+                    .is_some_and(|stop| self.stopped() == Some(stop)) =>
+            {
+                Err(error)
+            }
+            (Err(_), Some(reason)) => Ok(Outcome::Stopped {
+                reason,
+                residue: (),
+            }),
+            (Err(error), None) => Err(error),
+        }
     }
 
     /// Reports how far this scope got; a later `advance` adds to it.
@@ -553,5 +590,38 @@ impl<I: Reports, O: Within<I>> Observer<I> for Nest<'_, O> {
     fn closed(&self, closed: Closed) {
         let first = self.scope.ended.set(closed.ended).is_ok();
         debug_assert!(first, "a Nest hears one inner call");
+    }
+}
+
+// A part's scope as the root observer of its own call, in the same vocabulary.
+struct Part<'p, S: Reports> {
+    scope: Scope<'p, S>,
+    ask: fn(&Scope<'p, S>) -> ControlFlow<Stop>,
+}
+
+impl<S: Reports> Observer<S> for Part<'_, S> {
+    fn check(&self) -> ControlFlow<Stop> {
+        self.scope.latched(self.ask)
+    }
+    fn open(&self, scope: &S) -> Opened<'_, S> {
+        let scope = self.scope.open(scope);
+        match scope.is_heard() {
+            true => Opened::With(Box::new(Part {
+                scope,
+                ask: Scope::ask_own,
+            })),
+            false => Opened::Skip,
+        }
+    }
+    fn progress(&self, progress: Progress) {
+        self.scope.progress(progress.done, progress.total);
+    }
+    fn event(&self, event: &S::Event) {
+        if let Some(observer) = self.scope.observer() {
+            observer.event(event);
+        }
+    }
+    fn closed(&self, closed: Closed) {
+        let _ = self.scope.ended.set(closed.ended);
     }
 }

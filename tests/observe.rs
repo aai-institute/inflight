@@ -508,3 +508,120 @@ impl inflight::Stopping for Failure {
         }
     }
 }
+
+#[test]
+fn a_parts_own_stop_ends_only_that_part() {
+    let outcome = run(&(), |call: &Scope<'_, Named>| {
+        let budget = Flag::new();
+        let probe = call.under(Named("probe"), &budget, |probe| {
+            budget.raise(Stop::Rule("probe budget"));
+            probe.check()
+        })?;
+        call.check()?;
+        Ok(probe)
+    });
+    assert_eq!(
+        outcome,
+        Outcome::Completed(Outcome::Stopped {
+            reason: Stop::Rule("probe budget"),
+            residue: ()
+        })
+    );
+}
+
+#[derive(Debug, PartialEq)]
+struct At(Stop, u32);
+impl From<Stop> for At {
+    fn from(stop: Stop) -> Self {
+        At(stop, 0)
+    }
+}
+impl inflight::Stopping for At {
+    fn stop(&self) -> Option<Stop> {
+        Some(self.0)
+    }
+}
+
+#[test]
+fn the_calls_stop_leaves_a_part_with_the_bodys_error() {
+    let (forward, outbox) = recorder();
+    let call_flag = Flag::new();
+    let mut part = None;
+    let outcome = try_run(&(&forward, &call_flag), |call: &Scope<'_, Named>| {
+        part = Some(call.under(Named("probe"), &Flag::new(), |probe| {
+            call_flag.raise(Stop::Requested);
+            probe.check().map_err(|stop| At(stop, 7))
+        }));
+        call.check()?;
+        Ok::<_, At>(())
+    });
+    assert_eq!(part, Some(Err(At(Stop::Requested, 7))));
+    assert_eq!(
+        outcome,
+        Ok(Outcome::Stopped {
+            reason: Stop::Requested,
+            residue: ()
+        })
+    );
+    let record = outbox.record();
+    assert_eq!(
+        ended(&record.children[0].1),
+        Some(Ended::Stopped(Stop::Requested))
+    );
+}
+
+#[test]
+fn a_stopped_part_is_heard_by_the_call_and_its_control() {
+    let (forward, outbox) = recorder();
+    let (control, heard) = recorder();
+    let budget = (&control, Flag::new());
+    let outcome = run(&forward, |call: &Scope<'_, Named>| {
+        let _ = call.under(Named("probe"), &budget, |probe| {
+            probe.event(|| vec![1]);
+            budget.1.raise(Stop::Rule("probe budget"));
+            probe.check()
+        })?;
+        Ok(())
+    });
+    assert_eq!(outcome, Outcome::Completed(()));
+    let probe = &outbox.record().children[0].1;
+    assert_eq!(
+        ended(probe),
+        Some(Ended::Stopped(Stop::Rule("probe budget")))
+    );
+    assert_eq!(probe.events, vec![vec![1]]);
+    assert_eq!(heard.record().events, vec![vec![1]]);
+}
+
+#[test]
+fn a_call_stop_after_the_parts_own_leaves_the_part_stopped() {
+    let call_flag = Flag::new();
+    let mut part = None;
+    let outcome = try_run(&call_flag, |call: &Scope<'_, Named>| {
+        let superseded = Flag::new();
+        part = Some(call.under(Named("build"), &superseded, |build| {
+            superseded.raise(Stop::Rule("superseded"));
+            let own = build.check();
+            // Another thread's safe point, between the part's stop and `under` returning.
+            call_flag.raise(Stop::Requested);
+            let _ = call.check();
+            own.map_err(|stop| At(stop, 1))
+        }));
+        call.check()?;
+        Ok::<_, At>(())
+    });
+    assert_eq!(
+        part,
+        Some(Ok(Outcome::Stopped {
+            reason: Stop::Rule("superseded"),
+            residue: ()
+        }))
+    );
+    assert_eq!(
+        outcome,
+        Ok(Outcome::Stopped {
+            reason: Stop::Requested,
+            residue: ()
+        })
+    );
+}

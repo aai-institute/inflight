@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::Stop;
 
-/// Raised from outside the call; the first reason sticks.
+/// Raised from outside the call; the first reason sticks for the whole call, so a part's own stop belongs in [`Scope::under`](crate::Scope::under).
 #[derive(Debug, Default)]
 pub struct Flag(OnceLock<Stop>);
 
