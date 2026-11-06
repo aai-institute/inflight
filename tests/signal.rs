@@ -10,11 +10,12 @@ use pyo3::prelude::*;
 fn main() {
     Python::initialize();
     Python::attach(|py| {
-        // Embedded Python starts without handlers; a timer thread sends SIGINT once the work runs.
+        // Embedded Python starts without handlers; a timer thread raises SIGINT once the work runs.
+        // raise_signal, not os.kill: on Windows os.kill terminates the process instead of signalling it.
         py.run(
-            c"import os, signal, threading\n\
+            c"import signal, threading\n\
               signal.signal(signal.SIGINT, signal.default_int_handler)\n\
-              threading.Timer(0.1, os.kill, (os.getpid(), signal.SIGINT)).start()",
+              threading.Timer(0.1, signal.raise_signal, (signal.SIGINT,)).start()",
             None,
             None,
         )
