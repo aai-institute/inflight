@@ -9,6 +9,7 @@ readme = "README.md"
 description = "Stop a running computation at the safe points it chooses, and learn why it stopped"
 repository = "https://github.com/aai-institute/inflight"
 categories = ["concurrency"]
+keywords = ["cancellation", "progress", "interrupt", "timeout", "pyo3"]
 
 [dependencies]
 pyo3 = { version = "0.29", optional = true }
