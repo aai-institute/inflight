@@ -2,9 +2,9 @@ use std::ops::ControlFlow;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use inflight::{
-    run, Closed, IterationLimit, Observer, Opened, Outcome, Progress, Reports, Standard, Stop,
-};
+use inflight::{run, Closed, Observer, Opened, Outcome, Progress, Reports, Stop};
+mod common;
+use common::Standard;
 
 // A solver's own vocabulary: each step reports its residual.
 #[derive(Clone, Debug)]
@@ -143,15 +143,14 @@ where
 }
 
 #[test]
-fn one_step_is_both_an_iteration_and_a_residual() {
+fn a_residual_rule_stops_at_the_next_check() {
     let stall = Stagnation {
         patience: 3,
         factor: 0.9,
         state: Mutex::new((f64::INFINITY, 0)),
     };
-    let limit = IterationLimit::new(100);
     let mut steps = 0;
-    let out = run(&(&limit, &stall), |call| {
+    let out = run(&stall, |call| {
         call.within(Solve, |s| -> Result<(), Stop> {
             loop {
                 s.check()?;
@@ -169,15 +168,4 @@ fn one_step_is_both_an_iteration_and_a_residual() {
         }
     );
     assert_eq!(steps, 8);
-    let (limit, mut steps) = (IterationLimit::new(4), 0);
-    let _ = run(&limit, |call| {
-        call.within(Solve, |s| -> Result<(), Stop> {
-            loop {
-                s.check()?;
-                steps += 1;
-                s.event(|| SolveEvent::Step { residual: 1.0 });
-            }
-        })
-    });
-    assert_eq!(steps, 4);
 }

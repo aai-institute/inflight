@@ -1,6 +1,8 @@
 use std::fmt::Debug;
 
-use inflight::{run, Forward, Message, Outcome, Reports, Scope, Stop, Within};
+use inflight::{run, Outcome, Reports, Scope, Stop, Within};
+mod common;
+use common::{Message, Recorder};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Solve;
@@ -55,7 +57,7 @@ impl Within<Solve> for Counted {
 
 #[test]
 fn a_nest_maps_and_drops_events_of_a_primitive_type() {
-    let (recorder, outbox) = Forward::<Counted>::new();
+    let (recorder, outbox) = Recorder::<Counted>::new();
     let outcome = run(&recorder, |call: &Scope<'_, Counted>| {
         call.nest(Counted::Phase, |n| solve(n).into_result())
     });
@@ -86,7 +88,7 @@ where
 
 #[test]
 fn one_forward_hears_two_vocabularies_with_distinct_ids() {
-    let (forward, outbox) = Forward::<Said>::new();
+    let (forward, outbox) = Recorder::<Said>::new();
     solve(&forward).completed().expect("never stops");
     sweep(&forward).completed().expect("never stops");
     let mut opened = Vec::new();
@@ -116,7 +118,7 @@ fn counted(scope: &Scope<'_, Solve>, flag: &inflight::Flag) -> Result<u64, Stop>
 
 #[test]
 fn a_part_in_another_vocabulary_is_one_call() {
-    let (recorder, outbox) = Forward::<Counted>::new();
+    let (recorder, outbox) = Recorder::<Counted>::new();
     let flag = inflight::Flag::new();
     let outcome = run(&(&recorder, &flag), |call: &Scope<'_, Counted>| {
         call.within_as(Counted::Phase, |phase: &Scope<'_, Solve>| {

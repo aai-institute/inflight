@@ -27,21 +27,6 @@ impl inflight::Reports for SolveScope {
 - Events are owned values. Building one costs nothing when no observer listens (step 4).
 - Give each entry point that reports something different its own scope enum: `reduce` has `ReductionScope`, `factor` has `FactorizationScope`. An observer written for one then cannot be passed to the other.
 - An entry point that reports nothing and only checks takes `&dyn Observer<Infallible>`: inflight implements `Reports` for `std::convert::Infallible`.
-- Optional: say which of your events are standard facts, and generic rules such as `IterationLimit` or an owner's stagnation rule work with your algorithm. Both methods default to "no":
-
-  ```rust
-  impl inflight::Standard for SolveEvent {
-      fn is_iteration(&self) -> bool {
-          matches!(self, Self::Step { .. })
-      }
-      fn residual(&self) -> Option<f64> {
-          match self {
-              Self::Step { residual } => Some(*residual),
-              Self::Smoothing(_) => None,
-          }
-      }
-  }
-  ```
 
 ## 2. Let your error carry a stop
 
@@ -179,7 +164,19 @@ call.nest(SolveScope::Smoothing(SmoothScope::Pass), |nest| {
 
 ## 7. Choose your safe points
 
-- Call `check()` where stopping leaves nothing half-built that the caller would see.
+A safe point is a `check()?`. inflight never preempts a thread: a stop takes effect only where your code checks and returns the `Err`. You promise three things:
+
+- **Nothing half-built shows.** Call `check()` only where stopping leaves no state the caller would see half-built, including the residue you hand back.
+- **Every `Err` goes up.** Return `check()`'s `Err` with `?`, or inside your own error, up to the call's root. A body that drops it and returns `Ok` would make the call `Completed` with a result the stop cut short; debug builds panic there.
+- **Every thread checks, and often.** A thread that does not check runs to its end, and the call returns only then: a stop takes as long as the longest stretch between two checks on any thread. In Python, Ctrl-C waits that long too.
+
+In return, inflight guarantees:
+
+- **The first stop holds for the whole call.** Once any check in a call returns `Err`, on any thread, every later check in that call returns the same `Err`, even if the observer would now say `Continue`.
+- **Nothing that checks the call outlives it.** A scope borrows the call, so it cannot move into a detached thread; when the call returns, every thread that could check it has ended.
+
+Where to put them:
+
 - Scopes are `Sync`: blocks run in parallel each call `call.within(..)` from their own thread, and `call.advance(1, Some(blocks))` counts finished blocks in order.
 - **Keep scopes out of hot loops.** Passing a scope into a per-pivot loop cost approx-chol 2–3% of its instructions, even with no observer. Run the hot loop in chunks, and report and check between chunks:
 
@@ -195,5 +192,5 @@ call.nest(SolveScope::Smoothing(SmoothScope::Pass), |nest| {
   ```
 
 - To report about a chunk, sum it up inside the loop (a counter or a maximum) and report the summary at the boundary. Sampling single iterations costs the same and says less.
-- Report at the finest grain that is still cheap. Callers who want less wrap their observer in `Every`; nobody can get more than you report.
+- Report at the finest grain that is still cheap. Callers who want less ignore what they don't need; nobody can get more than you report.
 - Many short tasks: one scope for the scheduler with `advance(1, ..)` and a lazy `event`, rather than a scope per task.

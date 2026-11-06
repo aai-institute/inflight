@@ -17,13 +17,8 @@ An observer hears what an algorithm reports and, at the algorithm's safe points,
 | `()` | nothing; never stops |
 | `Flag` | stops with the reason it was raised with (`flag.raise(Stop::Requested)`, or `Stop::Signal` from `interruptible`) |
 | `Deadline::after(d)`, `Deadline::at(t)` | stops with `Stop::Deadline` |
-| `MemoryCap` (`memory` feature) | stops with `Stop::Memory` once resident memory passes a cap |
-| `IterationLimit::new(n)` | stops after `n` standard iterations, with `IterationLimit::STOP` |
-| `Every::new(n, o)` | passes each `n`-th event and progress report of each scope to `o`, and the last progress |
-| `Forward` | sends everything to an `Outbox` (below) |
-| `Traced` (`tracing` feature) | scopes become spans, the rest events in them |
 
-The controls (`Flag`, `Deadline`, `MemoryCap`) work with every algorithm and skip every scope; they also have an inherent `check()` for code that only wants to poll them.
+The controls (`Flag`, `Deadline`) work with every algorithm and skip every scope; they also have an inherent `check()` for code that only wants to poll them.
 
 ## A rule that only stops
 
@@ -53,15 +48,12 @@ Stop with `Stop::Rule(name)` and publish it as a `STOP` constant, so a caller ca
 
 Update your state in `event`, decide in `check`. You can't stop from inside `event`: only the algorithm knows where stopping is safe, and it asks at its next safe point.
 
-## A rule for every algorithm
+## A rule per scope
 
-Bound on the standard facts and the rule works with any algorithm that states them:
+A rule that judges each scope on its own hands each a fresh child in `open`:
 
 ```rust
-impl<S: Reports> Observer<S> for Stagnation
-where
-    S::Event: Standard,
-{
+impl Observer<SolveScope> for Stagnation {
     fn check(&self) -> ControlFlow<Stop> {
         match self.best.lock().unwrap().1 >= self.patience {
             true => ControlFlow::Break(Self::STOP),
@@ -69,11 +61,11 @@ where
         }
     }
     // Each scope converges on its own, so each gets a fresh count.
-    fn open(&self, _scope: &S) -> Opened<'_, S> {
+    fn open(&self, _scope: &SolveScope) -> Opened<'_, SolveScope> {
         Opened::With(Box::new(Stagnation::new(self.patience)))
     }
-    fn event(&self, event: &S::Event) {
-        if let Some(residual) = event.residual() {
+    fn event(&self, event: &SolveEvent) {
+        if let SolveEvent::Step { residual } = *event {
             let mut best = self.best.lock().unwrap();
             *best = match residual < best.0 {
                 true => (residual, 0),
@@ -155,23 +147,10 @@ Don't return `Opened::With(Box::new(&self.0))`: the wrapped observer then answer
 
 - `&(a, b)` passes two observers; both hear everything, and `a` is asked first. Nest pairs for more: `&(a, (b, c))`.
 - `&o` and `Box<dyn Observer<S>>` are observers too. An optional observer: `let shown: &dyn Observer<S> = bar.as_ref().map_or(&(), |b| b);`
-- Thin what a listener hears with `Every::new(n, &listener)`; `check`, `open` and `closed` are never thinned.
 
-## Forwarding, recording, Python
+## Python
 
-`Forward::<S>::new()` returns a forward and its `Outbox`. Pass the forward as the observer; another thread reads the outbox:
-
-| Outbox method | Delivers |
-|---|---|
-| `drain(deliver)` | everything sent so far, in order, but of each scope's progress only the latest; returns at once |
-| `follow(deliver)` | the same, waiting for each next message, until every `Forward` is dropped |
-| `record()` | what was not yet drained, as a `Record` tree of scopes, events, last progress and ends |
-
-- Messages carry scope ids; scope `0` is the call itself.
-- `follow` waits until the forward is dropped: drop it after the call.
-- To show progress live and also keep the whole tree, run under two forwards, `(live, kept)`, and record `kept`'s outbox.
-- One `Forward<S>` hears any algorithm whose vocabulary `S` reads (`S: Within<V>`), so one outbox can follow a pipeline of several algorithms.
-- In Python, `interruptible_with(py, on_wake, work)` runs `on_wake` on the main thread at every signal check; draining an outbox there into a Python callback gives a live progress bar.
+`interruptible_with(py, on_wake, work)` runs `on_wake` on the main thread at every signal check. `ProgressCallback::report(py)` there hands the call's progress to a Python callable; see the README.
 
 ## Rules that hold
 

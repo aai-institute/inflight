@@ -1,6 +1,8 @@
 use std::thread;
 
-use inflight::{run, try_run, Flag, Forward, Observer, Outcome, Record, Reports, Stop, Within};
+use inflight::{run, try_run, Flag, Observer, Outcome, Reports, Stop, Within};
+mod common;
+use common::{Recorded, Recorder};
 
 // --- (1) a resumable solver: the iterate must come back on a stop ---
 
@@ -94,7 +96,7 @@ fn a_resumable_solver_resumes_from_its_residue() {
 
 #[test]
 fn blocks_open_scopes_from_several_threads() {
-    let (recorder, outbox) = Forward::<SolveScope>::new();
+    let (recorder, outbox) = Recorder::<SolveScope>::new();
     let outcome = run(&recorder, |call| {
         thread::scope(|threads| {
             let handles: Vec<_> = (0..4u64)
@@ -111,7 +113,7 @@ fn blocks_open_scopes_from_several_threads() {
         })
     });
     assert_eq!(outcome, Outcome::Completed(()));
-    let record: Record<SolveScope> = outbox.record();
+    let record: Recorded<SolveScope> = outbox.record();
     assert_eq!(record.children.len(), 4);
 }
 

@@ -1,6 +1,5 @@
 use std::ops::ControlFlow;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -145,9 +144,6 @@ macro_rules! checks_only {
 
 checks_only!(Flag, Deadline);
 
-#[cfg(feature = "memory")]
-checks_only!(crate::MemoryCap);
-
 macro_rules! forwards {
     ($($wrapper:ty),*) => {$(
         impl<S: Reports, O: Observer<S> + ?Sized> Observer<S> for $wrapper {
@@ -237,59 +233,6 @@ impl<S: Reports, A: Observer<S>, B: Observer<S>> Observer<S> for (A, B) {
     }
 }
 
-/// Passes on each `n`-th event and progress report of each scope, and the last progress; checks and ends are never thinned.
-#[derive(Debug)]
-pub struct Every<O> {
-    n: u64,
-    inner: O,
-    events: AtomicU64,
-    reports: AtomicU64,
-}
-
-impl<O> Every<O> {
-    /// Panics unless `n > 0`.
-    pub fn new(n: u64, inner: O) -> Self {
-        assert!(n > 0, "every 0th report is none");
-        Self {
-            n,
-            inner,
-            events: AtomicU64::new(0),
-            reports: AtomicU64::new(0),
-        }
-    }
-
-    fn passes(&self, count: &AtomicU64) -> bool {
-        count.fetch_add(1, Ordering::Relaxed) % self.n == 0
-    }
-}
-
-impl<S: Reports, O: Observer<S>> Observer<S> for Every<O> {
-    fn check(&self) -> ControlFlow<Stop> {
-        self.inner.check()
-    }
-    fn open(&self, scope: &S) -> Opened<'_, S> {
-        // Boxed, so a child's type does not grow by a layer per depth.
-        match hear(&self.inner, scope) {
-            None => Opened::Skip,
-            Some(child) => Opened::With(Box::new(Every::new(self.n, child))),
-        }
-    }
-    fn progress(&self, progress: Progress) {
-        // The last report is the one a progress bar must not miss.
-        if self.passes(&self.reports) || progress.total == Some(progress.done) {
-            self.inner.progress(progress);
-        }
-    }
-    fn event(&self, event: &S::Event) {
-        if self.passes(&self.events) {
-            self.inner.event(event);
-        }
-    }
-    fn closed(&self, closed: Closed) {
-        self.inner.closed(closed);
-    }
-}
-
 // A parent's observer is borrowed, unboxed, and asked only by the parent.
 enum Listener<'s, S: Reports> {
     Own(Box<dyn Observer<S> + 's>),
@@ -353,6 +296,11 @@ fn call<S: Reports, R, E: Stopping>(
         done: Mutex::new(0),
     };
     let result = body(&call);
+    debug_assert!(
+        result.is_err() || latch.get().is_none(),
+        "a check returned Err({:?}), but the body returned Ok: propagate check()'s Err with `?`",
+        latch.get()
+    );
     let stopped = call.close(&result);
     (result, stopped)
 }

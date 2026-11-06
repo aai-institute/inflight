@@ -2,7 +2,8 @@ use std::ops::ControlFlow;
 use std::sync::Mutex;
 
 use inflight::{
-    run, try_run, Closed, Every, Flag, Observer, Opened, Outcome, Reports, Scope, Stop, Within,
+    hear, run, try_run, Closed, Flag, Observer, Opened, Outcome, Progress, Reports, Scope, Stop,
+    Within,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -148,18 +149,15 @@ fn three_vocabularies_nest_and_each_check_is_asked_once_per_safe_point() {
 }
 
 #[test]
-fn a_same_observer_in_a_tuple_under_every_is_asked_once_per_safe_point_at_depth() {
+fn a_same_observer_in_a_tuple_under_a_wrapper_is_asked_once_per_safe_point_at_depth() {
     let log = Log::default();
-    let observer = Every::new(
-        1,
-        (
-            SameTap(&log),
-            Tap {
-                log: &log,
-                name: "root".into(),
-            },
-        ),
-    );
+    let observer = Wrap((
+        SameTap(&log),
+        Tap {
+            log: &log,
+            name: "root".into(),
+        },
+    ));
     let outcome = run(&observer, |call: &Scope<'_, C>| {
         call.within(C::Top, |t| {
             t.within(C::Mid, |m| {
@@ -301,5 +299,29 @@ impl inflight::Stopping for IterError {
         match self {
             Self::Interrupted { stop, .. } => Some(*stop),
         }
+    }
+}
+
+// Passes everything on and wraps each child it hears, as an observer that thins or filters does.
+struct Wrap<O>(O);
+
+impl<S: Reports, O: Observer<S>> Observer<S> for Wrap<O> {
+    fn check(&self) -> ControlFlow<Stop> {
+        self.0.check()
+    }
+    fn open(&self, scope: &S) -> Opened<'_, S> {
+        match hear(&self.0, scope) {
+            Some(child) => Opened::With(Box::new(Wrap(child))),
+            None => Opened::Skip,
+        }
+    }
+    fn progress(&self, progress: Progress) {
+        self.0.progress(progress)
+    }
+    fn event(&self, event: &S::Event) {
+        self.0.event(event)
+    }
+    fn closed(&self, closed: Closed) {
+        self.0.closed(closed)
     }
 }

@@ -3,35 +3,17 @@
 #![deny(missing_docs)]
 
 mod controls;
-#[cfg(feature = "testing")]
-mod countdown;
-mod forward;
-#[cfg(feature = "memory")]
-mod memory;
 mod observe;
 #[cfg(feature = "pyo3")]
 mod python;
-mod recorder;
-mod standard;
-#[cfg(feature = "tracing")]
-mod traced;
 
 pub use controls::{Deadline, Flag};
-#[cfg(feature = "testing")]
-pub use countdown::Countdown;
-pub use forward::{Forward, Message, Outbox};
-#[cfg(feature = "memory")]
-pub use memory::MemoryCap;
 pub use observe::{
-    hear, run, run_fallible, try_run, Closed, Ended, Every, Nest, Observer, Opened, Progress,
-    Reports, Scope, Within,
+    hear, run, run_fallible, try_run, Closed, Ended, Nest, Observer, Opened, Progress, Reports,
+    Scope, Within,
 };
 #[cfg(feature = "pyo3")]
 pub use python::{interruptible, interruptible_with, Limits, ProgressCallback};
-pub use recorder::Record;
-pub use standard::{IterationLimit, Standard};
-#[cfg(feature = "tracing")]
-pub use traced::Traced;
 
 /// Why a call stopped.
 #[non_exhaustive]
@@ -41,8 +23,6 @@ pub enum Stop {
     Signal,
     /// A time budget ran out.
     Deadline,
-    /// The process's resident memory passed a cap.
-    Memory,
     /// The caller asked for it.
     Requested,
     /// A rule the call ran under, by its name.

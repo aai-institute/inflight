@@ -11,30 +11,13 @@ repository = "https://github.com/aai-institute/inflight"
 categories = ["concurrency"]
 
 [dependencies]
-memory-stats = { version = "1.2", features = ["always_use_statm"], optional = true }
 pyo3 = { version = "0.29", optional = true }
-tracing = { version = "0.1", optional = true, default-features = false }
 
 [features]
-memory = ["dep:memory-stats"]
-pyo3 = ["dep:pyo3", "memory"]
-tracing = ["dep:tracing"]
-testing = []
+pyo3 = ["dep:pyo3"]
 
 [lints.rust]
 unsafe_code = "forbid"
-
-[[test]]
-name = "memory"
-required-features = ["memory"]
-
-[[test]]
-name = "countdown"
-required-features = ["testing"]
-
-[[test]]
-name = "traced"
-required-features = ["tracing"]
 
 [[test]]
 name = "python"
@@ -44,6 +27,3 @@ required-features = ["pyo3"]
 name = "signal"
 harness = false
 required-features = ["pyo3"]
-
-[dev-dependencies]
-tracing = { version = "0.1", features = ["std"] }

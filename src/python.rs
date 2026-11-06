@@ -4,19 +4,13 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use pyo3::exceptions::{
-    PyInterruptedError, PyKeyboardInterrupt, PyMemoryError, PyRuntimeError, PyTimeoutError,
-    PyValueError,
-};
+use pyo3::exceptions::{PyInterruptedError, PyKeyboardInterrupt, PyTimeoutError, PyValueError};
 use pyo3::{Bound, Py, PyAny, PyErr, PyResult, Python};
 
-use crate::{Closed, Deadline, Ended, Flag, MemoryCap, Observer, Opened, Progress, Reports, Stop};
+use crate::{Closed, Deadline, Ended, Flag, Observer, Opened, Progress, Reports, Stop};
 
 /// How long a signal may wait for the main thread to notice it.
 const SIGNAL_POLL: Duration = Duration::from_millis(50);
-
-/// How often a memory limit samples resident memory; a check then costs one load.
-const MEMORY_SAMPLE: Duration = Duration::from_millis(10);
 
 /// Runs `work` beside the main thread with the GIL released; an exception from a signal handler stops it and is raised before `work`'s own.
 pub fn interruptible<T: Send>(
@@ -70,23 +64,21 @@ impl From<Stop> for PyErr {
         match stop {
             Stop::Signal => PyKeyboardInterrupt::new_err("stopped by a signal"),
             Stop::Deadline => PyTimeoutError::new_err("stopped at its deadline"),
-            Stop::Memory => PyMemoryError::new_err("stopped at its memory cap"),
             Stop::Requested => PyInterruptedError::new_err("stopped on request"),
             Stop::Rule(rule) => PyInterruptedError::new_err(format!("stopped by its {rule}")),
         }
     }
 }
 
-/// The limits a Python caller set on one call, as `timeout` seconds and `memory_limit` bytes; stops any algorithm.
+/// The limit a Python caller set on one call, as `timeout` seconds; stops any algorithm.
 #[derive(Debug)]
 pub struct Limits {
     deadline: Option<Deadline>,
-    memory: Option<MemoryCap>,
 }
 
 impl Limits {
-    /// `ValueError` for a timeout that is negative or not finite; `RuntimeError` for a memory limit where the platform does not report resident memory.
-    pub fn new(timeout: Option<f64>, memory_limit: Option<usize>) -> PyResult<Self> {
+    /// `ValueError` for a timeout that is negative or not finite.
+    pub fn new(timeout: Option<f64>) -> PyResult<Self> {
         let deadline = timeout
             .map(|seconds| {
                 Duration::try_from_secs_f64(seconds)
@@ -98,26 +90,14 @@ impl Limits {
                     })
             })
             .transpose()?;
-        let memory = memory_limit
-            .map(|bytes| {
-                MemoryCap::start(bytes, MEMORY_SAMPLE).ok_or_else(|| {
-                    PyRuntimeError::new_err(
-                        "memory_limit: this platform does not report resident memory",
-                    )
-                })
-            })
-            .transpose()?;
-        Ok(Self { deadline, memory })
+        Ok(Self { deadline })
     }
 }
 
 impl<S: Reports> Observer<S> for Limits {
     fn check(&self) -> ControlFlow<Stop> {
-        if let Some(deadline) = &self.deadline {
-            deadline.check()?;
-        }
-        match &self.memory {
-            Some(memory) => memory.check(),
+        match &self.deadline {
+            Some(deadline) => deadline.check(),
             None => ControlFlow::Continue(()),
         }
     }

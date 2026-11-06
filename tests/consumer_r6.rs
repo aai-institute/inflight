@@ -4,9 +4,11 @@ use std::thread;
 use std::time::Duration;
 
 use inflight::{
-    run, try_run, Deadline, Ended, Forward, Message, Observer, Outcome, Progress, Reports, Scope,
-    Standard, Stop, Stopping, Within,
+    run, try_run, Deadline, Ended, Observer, Outcome, Progress, Reports, Scope, Stop, Stopping,
+    Within,
 };
+mod common;
+use common::{Message, Recorder, Standard};
 
 // ---------- a third-party instrumented library ----------
 mod lib3 {
@@ -184,7 +186,7 @@ pub fn pipeline(
 #[test]
 fn pipeline_seq_and_parallel_record_the_same_shape() {
     for len in [4, 8] {
-        let (fwd, outbox) = Forward::<Phase>::new();
+        let (fwd, outbox) = Recorder::<Phase>::new();
         let mut data = vec![1.0; len];
         let out = pipeline(&fwd, &mut data).unwrap();
         assert_eq!(out, Outcome::Completed(()));
@@ -253,7 +255,7 @@ pub enum PyMsg {
 }
 
 pub fn bridge(budget: Duration, target: f64, data: Vec<f64>) -> (Vec<PyMsg>, String) {
-    let (fwd, outbox) = Forward::<Phase>::new();
+    let (fwd, outbox) = Recorder::<Phase>::new();
     let (tx, rx) = mpsc::channel::<PyMsg>();
     let rule = (Deadline::after(budget), ResidualTarget::new(target));
     let drainer = thread::spawn(move || {

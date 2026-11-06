@@ -1,6 +1,8 @@
 use std::rc::Rc;
 
-use inflight::{run, Forward, Reports, Within};
+use inflight::{run, Reports, Within};
+mod common;
+use common::Recorder;
 
 #[derive(Clone, Debug, PartialEq)]
 struct Algo;
@@ -25,7 +27,7 @@ impl Within<Algo> for Sent {
 
 #[test]
 fn a_non_send_vocabulary_forwards_through_an_owned_one() {
-    let (forward, outbox) = Forward::<Sent>::new();
+    let (forward, outbox) = Recorder::<Sent>::new();
     let _ = run::<Algo, _>(&forward, |call| {
         call.within(Algo, |part| {
             part.event(|| Rc::from("x"));

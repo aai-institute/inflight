@@ -4,9 +4,11 @@ use std::thread;
 use std::time::Duration;
 
 use inflight::{
-    run, try_run, Closed, Deadline, Flag, Forward, Message, Observer, Opened, Outcome, Progress,
-    Reports, Scope, Standard, Stop, Within,
+    run, try_run, Closed, Deadline, Flag, Observer, Opened, Outcome, Progress, Reports, Scope,
+    Stop, Within,
 };
+mod common;
+use common::{Message, Recorder, Standard};
 
 // ---------- algorithm 1: a resumable, fallible optimizer ----------
 
@@ -333,9 +335,9 @@ fn pipeline_stagnation_and_bar() {
 
 #[test]
 fn forward_progress_over_both() {
-    let (fwd, outbox) = Forward::<Opt>::new();
+    let (fwd, outbox) = Recorder::<Opt>::new();
     optimize(&fwd, Iterate { x: 0.0, k: 0 }, 10, 0.0).unwrap();
-    let (fwd2, outbox2) = Forward::<Pipe>::new();
+    let (fwd2, outbox2) = Recorder::<Pipe>::new();
     pipeline(&fwd2, &mut vec![vec![1.0; 8]; 3], 4);
     let mut n = 0;
     outbox
@@ -376,7 +378,7 @@ fn a_rule_stop_is_told_apart_from_a_later_cancel() {
 fn parallel_progress_ends_at_its_total() {
     let mut stale = 0;
     for _ in 0..2000 {
-        let (forward, outbox) = Forward::<Pipe>::new();
+        let (forward, outbox) = Recorder::<Pipe>::new();
         pipeline(&forward, &mut vec![vec![1.0; 4]; 8], 1);
         let r = outbox.record();
         let p = r.children[0].1.progress.unwrap();
