@@ -9,8 +9,23 @@ rust = ">=1.85"
 python = ">=3.11,<3.14"
 pre-commit = ">=4"
 
+[feature.coverage.dependencies]
+cargo-llvm-cov = ">=0.8.4,<0.9"
+
+[feature.gates.dependencies]
+cargo-deny = ">=0.20.2,<0.21"
+
+# One environment per job shape, so nothing installs a tool it will not run.
+[environments]
+default = { features = ["coverage", "gates"], solve-group = "default" }
+ci = { features = ["coverage"], solve-group = "default" }
+gates = { features = ["gates"], solve-group = "default" }
+platform = { features = [], solve-group = "default" }
+
 [tasks]
 fmt = "cargo fmt --all"
 lint = "cargo clippy --all-targets --all-features -- -D warnings"
 # Test binaries link libpython once the pyo3 feature is on; the loader must find pixi's.
-test = { cmd = "cargo test --all-features", env = { DYLD_FALLBACK_LIBRARY_PATH = "$CONDA_PREFIX/lib", LD_LIBRARY_PATH = "$CONDA_PREFIX/lib" } }
+test = { cmd = "cargo test --all-features --no-fail-fast", env = { DYLD_FALLBACK_LIBRARY_PATH = "$CONDA_PREFIX/lib", LD_LIBRARY_PATH = "$CONDA_PREFIX/lib" } }
+coverage = { cmd = "cargo llvm-cov --all-features --no-fail-fast --summary-only", env = { DYLD_FALLBACK_LIBRARY_PATH = "$CONDA_PREFIX/lib", LD_LIBRARY_PATH = "$CONDA_PREFIX/lib" } }
+deny = "cargo deny check"
