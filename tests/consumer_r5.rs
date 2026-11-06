@@ -8,8 +8,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use inflight::{
-    run, try_run, Closed, Flag, Observer, Opened, Outcome, Progress, Reports, Scope, Standard,
-    Stop, Stopping,
+    run, try_run, Closed, Flag, Observer, Opened, Outcome, Progress, Reports, Scope, Stop, Stopping,
 };
 
 // ---------- designer: 0/1 knapsack branch-and-bound, dynamic tree of scopes ----------
@@ -26,7 +25,6 @@ pub enum BnbEvent {
 impl Reports for Bnb {
     type Event = BnbEvent;
 }
-impl Standard for BnbEvent {}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Item {

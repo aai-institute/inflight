@@ -96,3 +96,15 @@ impl inflight::Stopping for Failure {
         }
     }
 }
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "propagate check()'s Err")]
+fn a_swallowed_stop_is_caught_in_debug_builds() {
+    let flag = Flag::new();
+    flag.raise(Stop::Requested);
+    let _ = try_run(&flag, |call: &Scope<'_, Named>| {
+        let _ = call.check();
+        Ok::<_, Failure>("half-built")
+    });
+}

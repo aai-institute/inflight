@@ -1,4 +1,6 @@
-use inflight::{run, Forward, Reports, Stop};
+use inflight::{run, Reports, Stop};
+mod common;
+use common::{Recorded, Recorder};
 
 #[derive(Clone, Debug, PartialEq)]
 enum Host {
@@ -24,7 +26,7 @@ impl inflight::Within<Lp> for Host {
 
 #[test]
 fn a_nested_root_reports_into_its_own_scope() {
-    let (forward, outbox) = Forward::<Host>::new();
+    let (forward, outbox) = Recorder::<Host>::new();
     let _ = run(&forward, |call| {
         call.within(Host::Blocks, |blocks| {
             for _ in 0..2 {
@@ -42,7 +44,7 @@ fn a_nested_root_reports_into_its_own_scope() {
     });
     let record = outbox.record();
     let (_, blocks) = &record.children[0];
-    let done = |r: &inflight::Record<Host>| r.progress.map(|p| (p.done, p.total));
+    let done = |r: &Recorded<Host>| r.progress.map(|p| (p.done, p.total));
     assert_eq!(done(blocks), Some((2, Some(2))));
     assert_eq!(blocks.children.len(), 2);
     assert!(blocks

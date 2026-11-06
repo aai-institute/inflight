@@ -4,9 +4,11 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use inflight::{
-    hear, run, try_run, Closed, Deadline, Every, Flag, Forward, IterationLimit, Message, Observer,
-    Opened, Outcome, Progress, Record, Reports, Standard, Stop, Stopping, Within,
+    hear, run, try_run, Closed, Deadline, Flag, Observer, Opened, Outcome, Progress, Reports, Stop,
+    Stopping, Within,
 };
+mod common;
+use common::{Recorded, Recorder};
 
 // ---- instrumenting: vocabulary
 
@@ -24,18 +26,6 @@ pub enum SolveEvent {
 
 impl Reports for SolveScope {
     type Event = SolveEvent;
-}
-
-impl Standard for SolveEvent {
-    fn is_iteration(&self) -> bool {
-        matches!(self, Self::Step { .. })
-    }
-    fn residual(&self) -> Option<f64> {
-        match self {
-            Self::Step { residual } => Some(*residual),
-            Self::Smoothing(_) => None,
-        }
-    }
 }
 
 // ---- instrumenting: errors
@@ -216,7 +206,7 @@ impl Observer<SolveScope> for FillCap {
     }
 }
 
-// ---- observing: a generic rule over standard facts
+// ---- observing: a rule per scope
 
 pub struct Stagnation {
     patience: u32,
@@ -234,10 +224,7 @@ impl Stagnation {
     }
 }
 
-impl<S: Reports> Observer<S> for Stagnation
-where
-    S::Event: Standard,
-{
+impl Observer<SolveScope> for Stagnation {
     fn check(&self) -> ControlFlow<Stop> {
         match self.best.lock().unwrap().1 >= self.patience {
             true => ControlFlow::Break(Self::STOP),
@@ -245,11 +232,11 @@ where
         }
     }
     // Each scope converges on its own, so each gets a fresh count.
-    fn open(&self, _scope: &S) -> Opened<'_, S> {
+    fn open(&self, _scope: &SolveScope) -> Opened<'_, SolveScope> {
         Opened::With(Box::new(Stagnation::new(self.patience)))
     }
-    fn event(&self, event: &S::Event) {
-        if let Some(residual) = event.residual() {
+    fn event(&self, event: &SolveEvent) {
+        if let SolveEvent::Step { residual } = *event {
             let mut best = self.best.lock().unwrap();
             *best = match residual < best.0 {
                 true => (residual, 0),
@@ -355,11 +342,17 @@ fn an_own_error_wins() {
 }
 
 #[test]
-fn generic_rules_and_listeners_compose() {
+fn rules_and_listeners_compose() {
     let closes = Closes::default();
-    let rules = (IterationLimit::new(1000), Stagnation::new(5));
+    let rules = (
+        FillCap {
+            budget: 1000,
+            seen: AtomicU64::new(0),
+        },
+        Stagnation::new(5),
+    );
     let mut blocks = vec![vec![1.0; 4]; 2];
-    let outcome = solve(&mut blocks, &(&rules, Every::new(10, &closes))).unwrap();
+    let outcome = solve(&mut blocks, &(&rules, &closes)).unwrap();
     assert!(matches!(outcome, Outcome::Completed(_)));
     assert!(closes.0.load(Relaxed) > 0);
 }
@@ -384,13 +377,13 @@ fn state_per_scope_and_a_wrapper() {
 
 #[test]
 fn parallel_blocks_report_ordered_progress() {
-    let (forward, outbox) = Forward::<SolveScope>::new();
+    let (forward, outbox) = Recorder::<SolveScope>::new();
     let mut blocks = vec![vec![1.0; 4]; 8];
     assert_eq!(
         solve_parallel(&mut blocks, &forward),
         Outcome::Completed(())
     );
-    let record: Record<SolveScope> = outbox.record();
+    let record: Recorded<SolveScope> = outbox.record();
     assert_eq!(
         record.progress,
         Some(Progress {
@@ -403,9 +396,12 @@ fn parallel_blocks_report_ordered_progress() {
 
 #[test]
 fn a_stopped_iteration_resumes_from_its_residue() {
-    let limit = IterationLimit::new(10);
-    let Outcome::Stopped { residue, .. } = iterate(Iterate { x: 1.0, k: 0 }, &limit) else {
-        panic!("the limit stops it");
+    let cap = FillCap {
+        budget: 9,
+        seen: AtomicU64::new(0),
+    };
+    let Outcome::Stopped { residue, .. } = iterate(Iterate { x: 1.0, k: 0 }, &cap) else {
+        panic!("the cap stops it");
     };
     assert_eq!(residue.k, 10);
     assert!(matches!(
@@ -417,26 +413,4 @@ fn a_stopped_iteration_resumes_from_its_residue() {
 #[test]
 fn a_check_only_library_takes_any_control() {
     assert_eq!(count_to(5, &Flag::new()), Outcome::Completed(5));
-}
-
-#[test]
-fn a_forward_drained_on_another_thread() {
-    let (forward, outbox) = Forward::<SolveScope>::new();
-    let shown = std::thread::scope(|threads| {
-        let drainer = threads.spawn(move || {
-            let mut events = 0;
-            let Ok(()) = outbox.follow(|message| {
-                if let Message::Event { .. } = message {
-                    events += 1;
-                }
-                Ok::<(), std::convert::Infallible>(())
-            });
-            events
-        });
-        let mut blocks = vec![vec![1.0; 4]; 2];
-        solve(&mut blocks, &forward).unwrap();
-        drop(forward);
-        drainer.join().unwrap()
-    });
-    assert!(shown > 0);
 }

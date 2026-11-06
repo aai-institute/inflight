@@ -32,14 +32,14 @@ fn seen(py: Python<'_>) -> (Bound<'_, PyAny>, Bound<'_, PyAny>) {
 fn a_timeout_must_be_a_duration() {
     Python::initialize();
     Python::attach(|py| {
-        let error = Limits::new(Some(-1.0), None).unwrap_err();
+        let error = Limits::new(Some(-1.0)).unwrap_err();
         assert!(error.is_instance_of::<PyValueError>(py));
     });
 }
 
 #[test]
 fn a_spent_timeout_stops_the_call() {
-    let limits = Limits::new(Some(0.0), None).unwrap();
+    let limits = Limits::new(Some(0.0)).unwrap();
     let outcome = run::<Part, _>(&limits, |call| call.check());
     assert_eq!(
         outcome,

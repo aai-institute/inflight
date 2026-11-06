@@ -1,4 +1,6 @@
-use inflight::{run, try_run, Ended, Forward, Nest, Outcome, Reports, Stop};
+use inflight::{run, try_run, Ended, Nest, Outcome, Reports, Stop};
+mod common;
+use common::Recorder;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct P(&'static str);
@@ -18,7 +20,7 @@ fn solve(observer: &Nest<'_, P>, n: usize) -> Result<Outcome<()>, Stop> {
 }
 
 fn nested_end(n: usize) -> Ended {
-    let (fwd, outbox) = Forward::<P>::new();
+    let (fwd, outbox) = Recorder::<P>::new();
     let out = run(&fwd, |call| {
         call.nest(P("inner"), |nest| solve(nest, n))?;
         Ok(())
@@ -60,7 +62,7 @@ fn nest_whose_body_fails_after_the_call_fails() {
             }
         }
     }
-    let (fwd, outbox) = Forward::<P>::new();
+    let (fwd, outbox) = Recorder::<P>::new();
     let out = try_run(&fwd, |call| {
         call.nest(P("inner"), |nest| {
             solve(nest, 3)?;

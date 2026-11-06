@@ -1,6 +1,8 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use inflight::{run, Forward, Observer, Opened, Reports, Stop};
+use inflight::{run, Observer, Opened, Reports, Stop};
+mod common;
+use common::Recorder;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Out(&'static str);
@@ -17,7 +19,7 @@ impl Observer<Out> for PanicsOnOpen {
 
 #[test]
 fn a_pair_whose_second_panics_in_open_leaves_no_open_scope_recorded() {
-    let (forward, outbox) = Forward::<Out>::new();
+    let (forward, outbox) = Recorder::<Out>::new();
     let caught = catch_unwind(AssertUnwindSafe(|| {
         run(&(&forward, PanicsOnOpen), |call| {
             call.within(Out("block"), |_| Ok::<_, Stop>(()))

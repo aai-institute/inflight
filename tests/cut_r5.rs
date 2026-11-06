@@ -2,7 +2,9 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use inflight::{run, Closed, Ended, Forward, Observer, Progress, Reports, Stop};
+use inflight::{run, Closed, Ended, Observer, Progress, Reports, Stop};
+mod common;
+use common::Recorder;
 
 #[derive(Clone, Debug, PartialEq)]
 struct Part;
@@ -88,7 +90,7 @@ fn a_closed_panic_closes_each_scope_once() {
 
 #[test]
 fn a_forward_beside_a_panicking_closed_still_hears_the_close() {
-    let (forward, outbox) = Forward::<Part>::new();
+    let (forward, outbox) = Recorder::<Part>::new();
     let seen = ClosedOnce(AtomicU64::new(0), AtomicU64::new(0));
     let both = (seen, forward);
     let _ = catch_unwind(AssertUnwindSafe(|| {

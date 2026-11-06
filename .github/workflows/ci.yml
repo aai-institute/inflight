@@ -33,14 +33,8 @@ jobs:
         run: pixi run -e ci cargo fmt --all -- --check
       - name: cargo clippy
         run: pixi run -e ci cargo clippy --all-targets --all-features -- -D warnings
-      # All-features is clippied above; pyo3 implies memory, so subsets with both are left out.
-      - name: cargo clippy (feature subsets)
-        run: |
-          for features in "" memory tracing testing pyo3 memory,tracing memory,testing memory,tracing,testing pyo3,tracing pyo3,testing tracing,testing; do
-            echo "::group::features=[$features]"
-            pixi run -e ci cargo clippy --all-targets --no-default-features --features "$features" -- -D warnings
-            echo "::endgroup::"
-          done
+      - name: cargo clippy (no features)
+        run: pixi run -e ci cargo clippy --all-targets --no-default-features -- -D warnings
       # Coverage tests only --all-features, which hides breakage with features off.
       - name: cargo test (default features)
         run: pixi run -e ci cargo test --no-fail-fast

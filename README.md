@@ -6,7 +6,7 @@ Stop a running computation at the safe points it chooses, and learn why it stopp
 
 ## Design
 
-- **The computation chooses its safe points.** These are places where stopping leaves a well-defined state. The caller only decides *whether* to stop there.
+- **The computation chooses its safe points.** These are places where stopping leaves a well-defined state. The caller only decides *whether* to stop there. Stopping is cooperative: inflight never preempts a thread, so a stop takes effect at the next safe point on each thread, and the library must return the stop it is handed. The contract is in [`guides/instrumenting.md`](guides/instrumenting.md#7-choose-your-safe-points).
 - **Observing means choosing, not changing.** An observer hears what the computation reports and answers checks with `Continue` or `Break(Stop)`. It never gets write access to the computation.
 - **A stop is an outcome, not an error.** A call returns `Outcome::Completed(result)` or `Outcome::Stopped { reason, residue }`. The residue is whatever the computation can hand back: nothing, or state you can resume from. An error the computation raised on its own still comes back as an error.
 - **The observer is an explicit parameter.** There is no ambient or thread-local state, so it reaches rayon workers and nested calls unchanged.
@@ -53,25 +53,10 @@ match outcome {
 
 Observers implement only the `Observer` methods they need: `check`, `event`, `progress`, `closed`, and `open`, which decides what hears a scope that starts. Pairs combine observers. Also included:
 
-- `Flag`, `Deadline` and `MemoryCap` (`memory` feature) stop any computation.
-- `Standard` lets a computation mark its iterations and residuals, so that `IterationLimit` and rules of your own work with any computation. A rule stops with `Stop::Rule(name)`, so its stop can be told apart from a cancel.
-- `Every::new(n, observer)` passes on each `n`-th event and progress report of each scope, and the last progress.
-- `Forward` sends everything through a channel to an `Outbox`, which can `drain`, `follow` until the call ends, or `record` the scope tree.
-- `Traced` (`tracing` feature) turns scopes into spans and the rest into events.
+- `Flag` and `Deadline` stop any computation.
+- A rule of your own stops with `Stop::Rule(name)`, so its stop can be told apart from a cancel.
 
 See [`guides/observing.md`](guides/observing.md).
-
-## Memory cap (`memory` feature)
-
-`MemoryCap` stops once the process's resident memory passes a byte limit. A background thread samples it at a fixed interval, so a check costs one atomic load. It is a soft cap: memory can grow past it until the computation's next safe point. `start` returns `None` where the platform does not report resident memory.
-
-```rust
-use inflight::MemoryCap;
-use std::time::Duration;
-
-let cap = MemoryCap::start(8 << 30, Duration::from_millis(1)).expect("resident memory is measurable");
-let outcome = solve(&cap);
-```
 
 ## Python (`pyo3` feature)
 
@@ -85,18 +70,18 @@ let outcome = inflight::interruptible(py, |signal| solve(signal))?;
 
 Two observers turn a Python function's keyword arguments into inflight:
 
-- `Limits::new(timeout, memory_limit)?` stops any computation after `timeout` seconds or past `memory_limit` bytes of resident memory, raising `TimeoutError` or `MemoryError`; a bad `timeout` is a `ValueError`. (`pyo3` turns on the `memory` feature.)
+- `Limits::new(timeout)?` stops any computation after `timeout` seconds, raising `TimeoutError`; a bad `timeout` is a `ValueError`.
 - `ProgressCallback::new(progress)` hands the call's own progress to a Python `progress(done, total)`, and `ProgressCallback::summing(progress, |scope| ..)` the summed progress of the scopes it picks. Call its `report(py)` from `interruptible_with`'s hook; it calls Python only when the progress moved, and does nothing without a callable.
 
 ```rust
-let limits = inflight::Limits::new(timeout, memory_limit)?;
+let limits = inflight::Limits::new(timeout)?;
 let progress = inflight::ProgressCallback::new(progress);
 let outcome = inflight::interruptible_with(py, |py| progress.report(py), |signal| {
     solve(&(signal, (&limits, &progress)))
 })?;
 ```
 
-`Stop` converts to `PyErr`: `Signal` to `KeyboardInterrupt`, `Deadline` to `TimeoutError`, `Memory` to `MemoryError`, `Requested` and `Rule` to `InterruptedError`.
+`Stop` converts to `PyErr`: `Signal` to `KeyboardInterrupt`, `Deadline` to `TimeoutError`, `Requested` and `Rule` to `InterruptedError`.
 
 ## Development
 

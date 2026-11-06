@@ -4,9 +4,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 
 use inflight::{
-    run, try_run, Closed, Ended, Every, Flag, Forward, Observer, Opened, Outbox, Outcome, Progress,
-    Record, Reports, Scope, Stop, Within,
+    run, try_run, Closed, Ended, Flag, Observer, Opened, Outcome, Progress, Reports, Scope, Stop,
+    Within,
 };
+mod common;
+use common::{Recorded, Recorder, Recording};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Named(&'static str);
@@ -15,10 +17,10 @@ impl Reports for Named {
     type Event = Vec<u32>;
 }
 
-type Kept = Record<Named>;
+type Kept = Recorded<Named>;
 
-fn recorder() -> (Forward<Named>, Outbox<Named>) {
-    Forward::new()
+fn recorder() -> (Recorder<Named>, Recording<Named>) {
+    Recorder::new()
 }
 
 fn ended(record: &Kept) -> Option<Ended> {
@@ -298,44 +300,6 @@ fn a_pair_hears_both_and_asks_the_first_first() {
     }
 }
 
-#[test]
-fn every_thins_events_and_progress_per_scope_but_keeps_the_last_progress() {
-    let (recorder, outbox) = recorder();
-    let every = Every::new(3, &recorder);
-    run(&every, |call| {
-        for name in ["a", "b"] {
-            call.within(Named(name), |block| {
-                for k in 1..=8 {
-                    block.event(|| vec![k]);
-                    block.progress(u64::from(k), Some(8));
-                }
-                Ok(())
-            })?;
-        }
-        Ok(())
-    });
-    let record = outbox.record();
-    for (_, block) in &record.children {
-        assert_eq!(block.events, [vec![1], vec![4], vec![7]]);
-        assert_eq!(
-            block.progress.map(|p| p.done),
-            Some(8),
-            "the last, off the stride"
-        );
-        assert_eq!(ended(block), Some(Ended::Completed));
-    }
-}
-
-#[test]
-fn every_never_thins_checks() {
-    let checks = Checks::default();
-    let every = Every::new(100, &checks);
-    run(&every, |call: &Scope<'_, Named>| {
-        (0..5).try_for_each(|_| call.check())
-    });
-    assert_eq!(checks.0.load(Ordering::Relaxed), 5);
-}
-
 /// An outer algorithm that nests `Named` calls, as within nests approx-chol's builds.
 #[derive(Clone, Debug, PartialEq)]
 enum OuterScope {
@@ -362,10 +326,10 @@ impl Within<Named> for OuterScope {
     }
 }
 
-type OuterRecord = Record<OuterScope>;
+type OuterRecord = Recorded<OuterScope>;
 
-fn outer_recorder() -> (Forward<OuterScope>, Outbox<OuterScope>) {
-    Forward::new()
+fn outer_recorder() -> (Recorder<OuterScope>, Recording<OuterScope>) {
+    Recorder::new()
 }
 
 fn outer_ended(record: &OuterRecord) -> Option<Ended> {
