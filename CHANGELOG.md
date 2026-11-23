@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-23
+
+No changes to the crate. Released to check publishing from CI through crates.io trusted publishing.
+
 ## [0.1.0] - 2026-11-23
 
 First release.
@@ -21,5 +25,6 @@ First release.
 - A debug build panics when a body swallows a `check()` stop and returns `Ok`.
 - `pyo3` feature: `interruptible` and `interruptible_with` stop a computation on Ctrl-C while it runs with the GIL released; `Limits` turns a `timeout` into a stop; `ProgressCallback` hands progress to a Python `progress(done, total)`; `Stop` converts to `PyErr`.
 
-[Unreleased]: https://github.com/aai-institute/inflight/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/aai-institute/inflight/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/aai-institute/inflight/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/aai-institute/inflight/releases/tag/v0.1.0
