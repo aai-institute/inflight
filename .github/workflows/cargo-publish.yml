@@ -14,10 +14,15 @@ jobs:
     name: Publish to crates.io
     runs-on: ubuntu-latest
     environment: publish
+    permissions:
+      contents: read
+      id-token: write # trusted publishing: exchanged for a 30-minute crates.io token
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
       - name: Publish inflight
         run: cargo publish -p inflight
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
