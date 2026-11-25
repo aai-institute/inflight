@@ -101,6 +101,7 @@ The `testing` feature adds checks that a result does not depend on the pool and 
 pixi install
 pixi run test   # cargo test --all-features
 pixi run lint   # clippy, warnings denied
+pixi run smells # clippy with stricter thresholds, advisory
 ```
 
 ## License

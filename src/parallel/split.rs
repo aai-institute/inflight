@@ -95,7 +95,11 @@ zip!(A, B, C);
 zip!(A, B, C, D);
 
 /// The leaves [`Threads::fold_tree`] cuts `n_items` items into, `block_len` each: at least one,
-/// as an empty input is one leaf. Panics if `block_len` is 0.
+/// as an empty input is one leaf.
+///
+/// # Panics
+/// If `block_len` is 0.
+#[must_use]
 pub fn fold_leaves(n_items: usize, block_len: usize) -> usize {
     assert!(block_len > 0, "blocks of at least one item");
     n_items.div_ceil(block_len).max(1)
@@ -106,8 +110,10 @@ impl Threads {
     /// item, combined in a binary tree fixed by the length alone, so the result's bits do not
     /// depend on the threads. Subtrees fork as rayon's adaptive splitter would, each fork halving
     /// the budget, down to one leaf a task: `block_len` is the smallest task too, and work too
-    /// small to spread belongs under [`Threads::ONE`]. An empty input is one leaf. Panics if
-    /// `block_len` is 0.
+    /// small to spread belongs under [`Threads::ONE`]. An empty input is one leaf.
+    ///
+    /// # Panics
+    /// If `block_len` is 0.
     pub fn fold_tree<P: Split, T: Send>(
         self,
         input: P,
@@ -122,6 +128,9 @@ impl Threads {
 
     /// [`fold_tree`](Self::fold_tree), each leaf also owning its item of `state`, which has
     /// [`fold_leaves`] items.
+    ///
+    /// # Panics
+    /// If `block_len` is 0, or `state` does not have [`fold_leaves`] items.
     pub fn fold_tree_with<P: Split, S: Split, T: Send>(
         self,
         input: P,
@@ -209,7 +218,7 @@ impl Forks {
     }
 
     /// Both sides on this thread: no split left to them.
-    fn serial(self) -> Self {
+    const fn serial(self) -> Self {
         Self { splits: 0, ..self }
     }
 }
@@ -237,6 +246,9 @@ impl Threads {
     /// [`for_each_item`](Self::for_each_item) for an `f` that may fail. Once an item fails, the
     /// others stop starting items as they see it: some may still start, running ones finish, and
     /// which of several errors returns is unspecified.
+    ///
+    /// # Errors
+    /// An error of `f`.
     pub fn try_for_each_item<P: Split, E: Send>(
         self,
         input: P,
@@ -349,8 +361,10 @@ pub struct Pieces<'o, P> {
 }
 
 impl<'o, P: Split> Pieces<'o, P> {
-    /// `inner` cut at `offsets`, which are non-empty, non-decreasing and inside `inner`; items
-    /// outside their span are left out.
+    /// `inner` cut at `offsets`; items outside their span are left out.
+    ///
+    /// # Panics
+    /// Unless `offsets` are non-empty, non-decreasing and inside `inner`.
     pub fn new(inner: P, offsets: &'o [usize]) -> Self {
         let inside = offsets.last().is_some_and(|&end| end <= inner.n_items());
         assert!(
@@ -402,6 +416,9 @@ pub struct Chunks<'a, T> {
 
 impl<'a, T> Chunks<'a, T> {
     /// `values` cut into `n` chunks of equal length.
+    ///
+    /// # Panics
+    /// If `values` does not cut into `n` chunks of equal length.
     pub fn equal(values: &'a mut [T], n: usize) -> Self {
         let width = values.len().checked_div(n).unwrap_or(0);
         assert_eq!(width * n, values.len(), "chunks of equal length");
@@ -409,7 +426,8 @@ impl<'a, T> Chunks<'a, T> {
     }
 
     /// The values of every chunk, in order.
-    pub fn into_values(self) -> &'a mut [T] {
+    #[must_use]
+    pub const fn into_values(self) -> &'a mut [T] {
         self.values
     }
 }
@@ -444,6 +462,9 @@ pub struct Accumulators<'a, T> {
 
 impl<'a, T> Accumulators<'a, T> {
     /// `n` accumulators: `first`, then `rest` cut into `n - 1` of its length.
+    ///
+    /// # Panics
+    /// If `n` is 0, or `rest` does not hold `n - 1` accumulators of `first`'s length.
     pub fn new(first: &'a mut [T], rest: &'a mut [T], n: usize) -> Self {
         let equal = n.checked_sub(1).and_then(|n| first.len().checked_mul(n)) == Some(rest.len());
         assert!(equal, "at least one accumulator, all of equal length");

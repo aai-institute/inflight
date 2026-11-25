@@ -3,9 +3,14 @@
 use std::io;
 
 /// Runs `f` on a fresh pool of the current pool's size, entered from a thread outside every pool,
-/// and waits for it: a rayon worker that waits on a pool steals other jobs meanwhile, and a stolen
-/// job that waits on `f` deadlocks. Nothing `f` runs may wait on the caller's pool. A panic in `f`
-/// resumes on the caller; the error is the pool's or the bridging thread's failure to start.
+/// and waits for it.
+///
+/// A rayon worker that waits on a pool steals other jobs meanwhile, and a stolen job that waits on
+/// `f` deadlocks. Nothing `f` runs may wait on the caller's pool. A panic in `f` resumes on the
+/// caller.
+///
+/// # Errors
+/// The pool or the thread that enters it failed to start.
 pub fn isolated<R: Send>(f: impl FnOnce() -> R + Send) -> io::Result<R> {
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(rayon::current_num_threads())

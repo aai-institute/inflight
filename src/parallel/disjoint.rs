@@ -53,9 +53,12 @@ enum Stored {
 }
 
 impl<I: ListedIndex> Partition<I> {
-    /// `sets` of indices below `n`, the listed ones taking `listed` in turn; an error unless they
-    /// take all of it, every index is below `n` and none is in two sets. Allocates `n` bits once
-    /// the runs are known to be below `n`.
+    /// `sets` of indices below `n`, the listed ones taking `listed` in turn. Allocates `n` bits
+    /// once the runs are known to be below `n`.
+    ///
+    /// # Errors
+    /// Unless the listed sets take all of `listed`, every index is below `n` and none is in two
+    /// sets.
     pub fn new(
         n: usize,
         listed: Box<[I]>,
@@ -142,21 +145,25 @@ impl std::error::Error for PartitionError {}
 
 impl<I> Partition<I> {
     /// The bound every index is below.
-    pub fn n(&self) -> usize {
+    #[must_use]
+    pub const fn n(&self) -> usize {
         self.n
     }
 
     /// Its sets.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.sets.len()
     }
 
     /// Whether it has no set.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.sets.is_empty()
     }
 
     /// Set `k`'s indices.
+    #[must_use]
     pub fn members(&self, k: usize) -> Members<'_, I> {
         match self.sets[k] {
             Stored::Run { start, len } => Members::Run { start, len },
@@ -165,6 +172,7 @@ impl<I> Partition<I> {
     }
 
     /// The listed sets' indices, in turn.
+    #[must_use]
     pub fn listed(&self) -> &[I] {
         &self.listed
     }
@@ -172,6 +180,9 @@ impl<I> Partition<I> {
 
 impl<I: ListedIndex> Partition<I> {
     /// Set `k`'s items of `x`, which no one else holds while the claim lives.
+    ///
+    /// # Panics
+    /// If `x` is shorter than [`n`](Self::n) or `k` is not a set.
     pub fn claim<'a, V>(&'a self, x: &'a mut [V], k: usize) -> Claim<'a, I, V> {
         assert!(self.n <= x.len(), "every set's items inside the slice");
         // SAFETY: every member is below `n`, and `x` is borrowed for the claim alone.
@@ -183,11 +194,13 @@ impl<I: ListedIndex> Partition<I> {
 ///
 /// # Safety
 /// The slice holds every member, and no other access touches them while the claim lives.
-unsafe fn claim<'a, I, V>(ptr: *mut V, members: Members<'a, I>) -> Claim<'a, I, V> {
+const unsafe fn claim<'a, I, V>(ptr: *mut V, members: Members<'a, I>) -> Claim<'a, I, V> {
     match members {
-        // SAFETY: inside the slice, and no other access touches these items.
         Members::Run { start, len } => {
-            Claim::Run(unsafe { std::slice::from_raw_parts_mut(ptr.add(start), len) })
+            // SAFETY: the run starts inside the slice.
+            let first = unsafe { ptr.add(start) };
+            // SAFETY: the run's items are inside the slice, and no other access touches them.
+            Claim::Run(unsafe { std::slice::from_raw_parts_mut(first, len) })
         }
         Members::Listed(members) => Claim::Scattered(Scattered {
             ptr,
@@ -223,7 +236,7 @@ macro_rules! index {
 index!(u8, u16, u32, u64, usize);
 
 /// An index already checked below `n`, which is a `usize`.
-#[inline(always)]
+#[inline]
 fn index<I: ListedIndex>(i: I) -> usize {
     i.to_u64() as usize
 }
@@ -243,6 +256,9 @@ unsafe impl<I: Sync, V: Send> Sync for Disjoint<'_, I, V> {}
 
 impl<'x, I: ListedIndex, V> Disjoint<'x, I, V> {
     /// `x`, shared by `partition`'s sets until this drops.
+    ///
+    /// # Panics
+    /// If `x` is shorter than the partition's [`n`](Partition::n).
     pub fn new(x: &'x mut [V], partition: &'x Partition<I>) -> Self {
         assert!(
             partition.n() <= x.len(),
@@ -312,25 +328,32 @@ pub struct Scattered<'s, I, V> {
 
 impl<I: ListedIndex, V: Copy> Scattered<'_, I, V> {
     /// Its items.
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.members.len()
     }
 
     /// Whether it has no item.
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.members.is_empty()
     }
 
     /// Its `k`th item.
+    #[must_use]
     pub fn get(&self, k: usize) -> V {
-        // SAFETY: a member is below `n`, inside the slice, and no other claim writes it.
-        unsafe { self.ptr.add(index(self.members[k])).read() }
+        // SAFETY: a member is below `n`, inside the slice.
+        let item = unsafe { self.ptr.add(index(self.members[k])) };
+        // SAFETY: no other claim writes it.
+        unsafe { item.read() }
     }
 
     /// Sets its `k`th item.
     pub fn set(&mut self, k: usize, value: V) {
-        // SAFETY: a member is below `n`, inside the slice, and no other claim reads or writes it.
-        unsafe { self.ptr.add(index(self.members[k])).write(value) }
+        // SAFETY: a member is below `n`, inside the slice.
+        let item = unsafe { self.ptr.add(index(self.members[k])) };
+        // SAFETY: no other claim reads or writes it.
+        unsafe { item.write(value) }
     }
 }
 

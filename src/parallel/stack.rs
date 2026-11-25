@@ -17,7 +17,10 @@ pub struct Workspaces {
 }
 
 impl Workspaces {
-    /// A workspace for each of `each`, in order; panics if one overflows.
+    /// A workspace for each of `each`, in order.
+    ///
+    /// # Panics
+    /// If together they overflow the address space.
     pub fn new(each: impl IntoIterator<Item = StackReq>) -> Self {
         let each: Vec<StackReq> = each.into_iter().collect();
         assert!(
@@ -39,6 +42,7 @@ impl Workspaces {
     }
 
     /// What [`carve`](Self::carve) takes from a stack.
+    #[must_use]
     pub fn scratch(&self) -> StackReq {
         StackReq::new_aligned::<u8>(self.len(), self.align)
     }
@@ -65,6 +69,10 @@ impl Regions {
     /// As many regions of `region` as `stack` holds, at most `at_most`, at least one: a stack
     /// that holds none is the caller's to have checked. Each region is rounded up to its
     /// alignment, so the next starts aligned.
+    ///
+    /// # Panics
+    /// If `region` rounded up to its alignment overflows.
+    #[must_use]
     pub fn fitting(stack: &MemStack, region: StackReq, at_most: usize) -> Self {
         let align = region.align_bytes();
         let size = (region.size_bytes().checked_next_multiple_of(align)).expect("a region fits");
@@ -81,7 +89,8 @@ impl Regions {
     }
 
     /// Regions cut.
-    pub fn count(&self) -> usize {
+    #[must_use]
+    pub const fn count(&self) -> usize {
         self.count
     }
 

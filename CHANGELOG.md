@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `unsafe_code` is denied rather than forbidden: `parallel::disjoint` alone allows it.
+- `Deadline::at` and `Outcome::holding` are `const`; pure getters and constructors are `#[must_use]`; fallible and panicking functions document when in `# Errors` and `# Panics`.
 
 ## [0.1.1] - 2026-11-23
 

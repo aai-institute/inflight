@@ -253,6 +253,9 @@ pub struct Scope<'s, S: Reports> {
 }
 
 /// Runs `body` as one call under `observer`; an error carrying the call's stop makes it [`Outcome::Stopped`], any other error wins. A stop for one part of the call belongs in [`Scope::under`].
+///
+/// # Errors
+/// The body's error, if it carries no stop of the call.
 pub fn try_run<S: Reports, R, E: Stopping>(
     observer: &(dyn Observer<S> + '_),
     body: impl FnOnce(&Scope<'_, S>) -> Result<R, E>,
@@ -268,6 +271,9 @@ pub fn try_run<S: Reports, R, E: Stopping>(
 }
 
 /// As [`try_run`], for a body whose error is [`Interrupted`]: every stop ends the call as [`Outcome::Stopped`], so only the algorithm's own error comes out.
+///
+/// # Errors
+/// The algorithm's own error, [`Interrupted::Own`].
 pub fn run_fallible<S: Reports, R, E>(
     observer: &(dyn Observer<S> + '_),
     body: impl FnOnce(&Scope<'_, S>) -> Result<R, Interrupted<E>>,
@@ -318,6 +324,9 @@ pub fn run<S: Reports, R>(
 
 impl<'s, S: Reports> Scope<'s, S> {
     /// Runs `body` as a part with its own start and end, which follows from what `body` returns.
+    ///
+    /// # Errors
+    /// `body`'s error.
     pub fn within<R, E: Stopping>(
         &self,
         scope: S,
@@ -330,6 +339,9 @@ impl<'s, S: Reports> Scope<'s, S> {
     }
 
     /// As [`within`](Self::within), for a body in vocabulary `I` that this one reads [`Within`]: its scopes join this tree, and its stops are this call's.
+    ///
+    /// # Errors
+    /// `body`'s error.
     pub fn within_as<I: Reports, R, E: Stopping>(
         &self,
         scope: S,
@@ -342,6 +354,9 @@ impl<'s, S: Reports> Scope<'s, S> {
     }
 
     /// As [`within`](Self::within), with `control` asked too: its stop ends only this part, as [`Outcome::Stopped`]; the call's stop is `Err`.
+    ///
+    /// # Errors
+    /// `body`'s error, unless it carries the part's own stop.
     pub fn under<R, E: Stopping>(
         &self,
         scope: S,
@@ -399,7 +414,10 @@ impl<'s, S: Reports> Scope<'s, S> {
         }
     }
 
-    /// A safe point: `Err` if an observer, here or in a scope around this one, stops the call.
+    /// A safe point, where an observer here or in a scope around this one may stop the call.
+    ///
+    /// # Errors
+    /// The call's first stop, once one has stopped it.
     pub fn check(&self) -> Result<(), Stop> {
         match self.latched(Self::ask) {
             ControlFlow::Break(reason) => Err(reason),
@@ -408,6 +426,9 @@ impl<'s, S: Reports> Scope<'s, S> {
     }
 
     /// A scope `scope` inside this one, as the observer of an inner call: its scopes and events join this tree, its progress is this new scope's, and its checks and stops this call's.
+    ///
+    /// # Errors
+    /// `body`'s error.
     pub fn nest<R, E: Stopping>(
         &self,
         scope: S,

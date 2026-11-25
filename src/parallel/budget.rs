@@ -20,6 +20,7 @@ impl Threads {
 
     /// The most threads it runs at a time: no more than the current pool has. The calling thread
     /// alone asks no pool, as outside one rayon would build its global pool.
+    #[must_use]
     pub fn tasks(self) -> usize {
         match self {
             Self::ONE => 1,
@@ -31,6 +32,7 @@ impl Threads {
     /// Items per task, at least `grain`, in at most [`tasks`](Self::tasks) tasks under a count;
     /// `None` when one task takes all `len` or one thread runs, which leaves them on the calling
     /// thread.
+    #[must_use]
     pub fn per_task(self, len: usize, grain: usize) -> Option<usize> {
         let tasks = self.tasks();
         let per = match self {
@@ -64,7 +66,8 @@ impl Threads {
     }
 
     /// How a loop over items splits under this budget, at least `grain` items a task.
-    pub fn schedule(self, grain: usize) -> Schedule {
+    #[must_use]
+    pub const fn schedule(self, grain: usize) -> Schedule {
         Schedule {
             threads: self,
             grain,
@@ -131,10 +134,12 @@ impl Schedule {
     }
 }
 
-/// Runs `run` as one task of a split loop, which does nothing but mark it for `testing::peak`
-/// under the `testing` feature. This module's loops mark their tasks; a loop that splits work on
-/// rayon itself must run each task in it, or `peak` does not see the task.
-#[inline(always)]
+/// Runs `run` as one task of a split loop.
+///
+/// It does nothing but mark the task for `testing::peak` under the `testing` feature. This module's
+/// loops mark their tasks; a loop that splits work on rayon itself must run each task in it, or
+/// `peak` does not see the task.
+#[inline]
 pub fn instrument_task<R>(run: impl FnOnce() -> R) -> R {
     #[cfg(any(test, feature = "testing"))]
     return super::testing::counted(run);

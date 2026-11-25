@@ -1,6 +1,7 @@
-//! Parallel work on a rayon pool whose results do not depend on the thread count: a thread budget,
-//! sums in a tree fixed by the input length, loops over items that each own their part of a buffer,
-//! and room on a stack for tasks that run at once. Behind the `rayon` feature.
+//! Parallel work on a rayon pool whose results do not depend on the thread count.
+//!
+//! A thread budget, sums in a tree fixed by the input length, loops over items that each own their
+//! part of a buffer, and room on a stack for tasks that run at once. Behind the `rayon` feature.
 
 mod budget;
 mod disjoint;

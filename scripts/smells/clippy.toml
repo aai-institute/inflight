@@ -1,0 +1,8 @@
+# Thresholds for `pixi run smells` only; the everyday clippy keeps the defaults.
+too-many-arguments-threshold = 4
+too-many-lines-threshold = 40
+cognitive-complexity-threshold = 10
+type-complexity-threshold = 150
+max-fn-params-bools = 0
+max-struct-bools = 1
+excessive-nesting-threshold = 4

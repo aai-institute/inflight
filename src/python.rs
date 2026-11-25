@@ -12,7 +12,10 @@ use crate::{Closed, Deadline, Ended, Flag, Observer, Opened, Progress, Reports, 
 /// How long a signal may wait for the main thread to notice it.
 const SIGNAL_POLL: Duration = Duration::from_millis(50);
 
-/// Runs `work` beside the main thread with the GIL released; an exception from a signal handler stops it and is raised before `work`'s own.
+/// Runs `work` beside the main thread with the GIL released; an exception from a signal handler stops it.
+///
+/// # Errors
+/// The signal handler's exception, else `work`'s error.
 pub fn interruptible<T: Send>(
     py: Python<'_>,
     work: impl FnOnce(&Flag) -> PyResult<T> + Send,
@@ -20,7 +23,10 @@ pub fn interruptible<T: Send>(
     interruptible_with(py, |_| Ok(()), work)
 }
 
-/// As [`interruptible`], and runs `on_wake` on the main thread after each signal check and once after `work` ends; its error stops `work` too and is raised.
+/// As [`interruptible`], and runs `on_wake` on the main thread after each signal check and once after `work` ends; its error stops `work` too.
+///
+/// # Errors
+/// The signal handler's or `on_wake`'s exception, else `work`'s error.
 pub fn interruptible_with<T: Send>(
     py: Python<'_>,
     mut on_wake: impl FnMut(Python<'_>) -> PyResult<()>,
@@ -77,6 +83,9 @@ pub struct Limits {
 }
 
 impl Limits {
+    /// A deadline `timeout` seconds from now; none without a timeout.
+    ///
+    /// # Errors
     /// `ValueError` for a timeout that is negative or not finite.
     pub fn new(timeout: Option<f64>) -> PyResult<Self> {
         let deadline = timeout
@@ -135,6 +144,9 @@ impl<S: Reports> ProgressCallback<S> {
     }
 
     /// Calls the callable if the progress moved since the last report; meant for [`interruptible_with`]'s `on_wake`.
+    ///
+    /// # Errors
+    /// The callable's exception.
     pub fn report(&self, py: Python<'_>) -> PyResult<()> {
         let Some(callback) = &self.callback else {
             return Ok(());
