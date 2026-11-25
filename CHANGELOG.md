@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-25
+
 ### Added
 
 - `rayon` feature: `parallel`, parallel work whose results do not depend on the thread count, moved from schwarz-precond, approx-chol and within.
@@ -42,6 +44,7 @@ First release.
 - A debug build panics when a body swallows a `check()` stop and returns `Ok`.
 - `pyo3` feature: `interruptible` and `interruptible_with` stop a computation on Ctrl-C while it runs with the GIL released; `Limits` turns a `timeout` into a stop; `ProgressCallback` hands progress to a Python `progress(done, total)`; `Stop` converts to `PyErr`.
 
-[Unreleased]: https://github.com/aai-institute/inflight/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/aai-institute/inflight/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/aai-institute/inflight/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/aai-institute/inflight/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/aai-institute/inflight/releases/tag/v0.1.0
