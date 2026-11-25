@@ -15,37 +15,53 @@ use super::{instrument_task, Threads};
 /// The loops on [`Threads`] cut only strictly inside, at `0 < mid < n_items`; [`Pieces::new`]
 /// cuts its input at the ends of its span too.
 pub trait Split: Sized + Send {
+    /// One item, as the loops over items hand it.
+    type Item;
     /// Number of items.
     fn n_items(&self) -> usize;
     /// The first `mid` items and the rest.
     fn split_at(self, mid: usize) -> (Self, Self);
+    /// The item of an input of one.
+    fn into_item(self) -> Self::Item;
 }
 
-impl<T: Sync> Split for &[T] {
+impl<'a, T: Sync> Split for &'a [T] {
+    type Item = &'a T;
     fn n_items(&self) -> usize {
         <[T]>::len(self)
     }
     fn split_at(self, mid: usize) -> (Self, Self) {
         <[T]>::split_at(self, mid)
     }
+    fn into_item(self) -> &'a T {
+        &self[0]
+    }
 }
 
-impl<T: Send> Split for &mut [T] {
+impl<'a, T: Send> Split for &'a mut [T] {
+    type Item = &'a mut T;
     fn n_items(&self) -> usize {
         <[T]>::len(self)
     }
     fn split_at(self, mid: usize) -> (Self, Self) {
         <[T]>::split_at_mut(self, mid)
     }
+    fn into_item(self) -> &'a mut T {
+        &mut self[0]
+    }
 }
 
 impl Split for Range<usize> {
+    type Item = usize;
     fn n_items(&self) -> usize {
         self.end.saturating_sub(self.start)
     }
     fn split_at(self, mid: usize) -> (Self, Self) {
         let cut = self.start + mid.min(self.n_items());
         (self.start..cut, cut..self.end)
+    }
+    fn into_item(self) -> usize {
+        self.start
     }
 }
 
@@ -54,6 +70,7 @@ macro_rules! zip {
     ($first:ident $(, $rest:ident)+) => {
         #[allow(non_snake_case)]
         impl<$first: Split, $($rest: Split),+> Split for ($first, $($rest),+) {
+            type Item = ($first::Item, $($rest::Item),+);
             fn n_items(&self) -> usize {
                 let ($first, $($rest),+) = self;
                 $(debug_assert_eq!($first.n_items(), $rest.n_items());)+
@@ -64,6 +81,10 @@ macro_rules! zip {
                 let $first = $first.split_at(mid);
                 $(let $rest = $rest.split_at(mid);)+
                 (($first.0, $($rest.0),+), ($first.1, $($rest.1),+))
+            }
+            fn into_item(self) -> Self::Item {
+                let ($first, $($rest),+) = self;
+                ($first.into_item(), $($rest.into_item()),+)
             }
         }
     };
@@ -95,13 +116,8 @@ impl Threads {
         combine: impl Fn(T, T) -> T + Sync,
     ) -> T {
         let leaves = fold_leaves(input.n_items(), block_len);
-        let leaf = move |start, piece, _| leaf(start, piece);
-        let fold = Fold {
-            block_len,
-            leaf,
-            combine,
-        };
-        tree(0, input, 0..leaves, Forks::new(self), &fold)
+        let leaf = |start, piece, _| leaf(start, piece);
+        self.fold_tree_with(input, 0..leaves, block_len, leaf, combine)
     }
 
     /// [`fold_tree`](Self::fold_tree), each leaf also owning its item of `state`, which has
@@ -111,11 +127,12 @@ impl Threads {
         input: P,
         state: S,
         block_len: usize,
-        leaf: impl Fn(usize, P, S) -> T + Sync,
+        leaf: impl Fn(usize, P, S::Item) -> T + Sync,
         combine: impl Fn(T, T) -> T + Sync,
     ) -> T {
         let leaves = fold_leaves(input.n_items(), block_len);
         assert_eq!(state.n_items(), leaves, "one state per leaf");
+        let leaf = move |start, piece, state: S| leaf(start, piece, state.into_item());
         let fold = Fold {
             block_len,
             leaf,
@@ -208,11 +225,11 @@ impl Threads {
         }
     }
 
-    /// `f(i, part)` for each item `i` of `input`, `part` holding item `i` alone, at most
-    /// [`tasks`](Self::tasks) at once; the pool decides which run at once.
-    pub fn for_each_item<P: Split>(self, input: P, f: impl Fn(usize, P) + Sync) {
-        let Ok(()) = self.try_for_each_item(input, |i, part| {
-            f(i, part);
+    /// `f(i, item)` for each item `i` of `input`, at most [`tasks`](Self::tasks) at once; the
+    /// pool decides which run at once.
+    pub fn for_each_item<P: Split>(self, input: P, f: impl Fn(usize, P::Item) + Sync) {
+        let Ok(()) = self.try_for_each_item(input, |i, item| {
+            f(i, item);
             Ok::<(), Infallible>(())
         });
     }
@@ -223,50 +240,21 @@ impl Threads {
     pub fn try_for_each_item<P: Split, E: Send>(
         self,
         input: P,
-        f: impl Fn(usize, P) -> Result<(), E> + Sync,
+        f: impl Fn(usize, P::Item) -> Result<(), E> + Sync,
     ) -> Result<(), E> {
         let (tasks, n) = (self.tasks(), input.n_items());
         let failed = AtomicBool::new(false);
         if tasks <= 1 || n <= 1 {
             return items(0, input, &failed, &f);
         }
-        let run = |i, part| {
-            instrument_task(|| f(i, part)).inspect_err(|_| failed.store(true, Ordering::Release))
+        let run = |i, item| {
+            instrument_task(|| f(i, item)).inspect_err(|_| failed.store(true, Ordering::Release))
         };
-        if self == Self::All {
-            return par_split(input)
-                .try_for_each(|(start, part)| items(start, part, &failed, &run));
-        }
-        // Under a count, workers claim the next item in turn, so no more than it run at once.
-        let next = Mutex::new((0, Some(input)));
-        let claim = || {
-            let mut next = next.lock().unwrap_or_else(PoisonError::into_inner);
-            let (start, rest) = (next.0, next.1.take()?);
-            match rest.n_items() {
-                0 => None,
-                1 => Some((start, rest)),
-                _ => {
-                    let (part, tail) = rest.split_at(1);
-                    *next = (start + 1, Some(tail));
-                    Some((start, part))
-                }
+        match self {
+            Self::All => {
+                par_split(input).try_for_each(|(start, part)| items(start, part, &failed, &run))
             }
-        };
-        let error = Mutex::new(None);
-        workers(tasks.min(n), &|| {
-            while !failed.load(Ordering::Acquire) {
-                let Some((i, part)) = claim() else { break };
-                if let Err(e) = run(i, part) {
-                    error
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .get_or_insert(e);
-                }
-            }
-        });
-        match error.into_inner().unwrap_or_else(PoisonError::into_inner) {
-            Some(e) => Err(e),
-            None => Ok(()),
+            Self::Count(_) => claimed(tasks.min(n), input, &failed, &run),
         }
     }
 }
@@ -288,24 +276,61 @@ fn chunks<P: Split>(start: usize, input: P, per: usize, f: &(impl Fn(usize, P) +
 /// `f` of each item of `rest` in order, the first item `start`, until one fails or `failed` is
 /// raised.
 fn items<P: Split, E>(
-    start: usize,
+    mut start: usize,
     mut rest: P,
     failed: &AtomicBool,
-    f: &impl Fn(usize, P) -> Result<(), E>,
+    f: &impl Fn(usize, P::Item) -> Result<(), E>,
 ) -> Result<(), E> {
-    for i in start.. {
-        if rest.n_items() == 0 || failed.load(Ordering::Acquire) {
-            break;
-        }
+    while rest.n_items() > 0 && !failed.load(Ordering::Acquire) {
         // The last item goes whole: an input is cut strictly inside.
         if rest.n_items() == 1 {
-            return f(i, rest);
+            return f(start, rest.into_item());
         }
-        let (part, tail) = rest.split_at(1);
-        f(i, part)?;
-        rest = tail;
+        let (item, tail) = rest.split_at(1);
+        f(start, item.into_item())?;
+        (start, rest) = (start + 1, tail);
     }
     Ok(())
+}
+
+/// `f` of each item of `input` on `tasks` tasks, each claiming the next item in turn, so no more
+/// than `tasks` run at once; stops claiming once `failed` is raised.
+fn claimed<P: Split, E: Send>(
+    tasks: usize,
+    input: P,
+    failed: &AtomicBool,
+    f: &(impl Fn(usize, P::Item) -> Result<(), E> + Sync),
+) -> Result<(), E> {
+    let next = Mutex::new((0, Some(input)));
+    let claim = || {
+        let mut next = next.lock().unwrap_or_else(PoisonError::into_inner);
+        let (start, rest) = (next.0, next.1.take()?);
+        match rest.n_items() {
+            0 => None,
+            1 => Some((start, rest.into_item())),
+            _ => {
+                let (item, tail) = rest.split_at(1);
+                *next = (start + 1, Some(tail));
+                Some((start, item.into_item()))
+            }
+        }
+    };
+    let error = Mutex::new(None);
+    workers(tasks, &|| {
+        while !failed.load(Ordering::Acquire) {
+            let Some((i, item)) = claim() else { break };
+            if let Err(e) = f(i, item) {
+                error
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get_or_insert(e);
+            }
+        }
+    });
+    match error.into_inner().unwrap_or_else(PoisonError::into_inner) {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// `work` on each of `n` tasks at once.
@@ -344,6 +369,8 @@ impl<'o, P: Split> Pieces<'o, P> {
 }
 
 impl<P: Split> Split for Pieces<'_, P> {
+    /// A piece's items.
+    type Item = P;
     fn n_items(&self) -> usize {
         self.offsets.len() - 1
     }
@@ -359,6 +386,9 @@ impl<P: Split> Split for Pieces<'_, P> {
                 offsets: &self.offsets[mid..],
             },
         )
+    }
+    fn into_item(self) -> P {
+        self.inner
     }
 }
 
@@ -384,7 +414,9 @@ impl<'a, T> Chunks<'a, T> {
     }
 }
 
-impl<T: Send> Split for Chunks<'_, T> {
+impl<'a, T: Send> Split for Chunks<'a, T> {
+    /// A chunk's values.
+    type Item = &'a mut [T];
     fn n_items(&self) -> usize {
         self.n
     }
@@ -396,6 +428,9 @@ impl<T: Send> Split for Chunks<'_, T> {
             n,
         };
         (side(left, mid), side(right, self.n - mid))
+    }
+    fn into_item(self) -> &'a mut [T] {
+        self.values
     }
 }
 
@@ -414,14 +449,11 @@ impl<'a, T> Accumulators<'a, T> {
         assert!(equal, "at least one accumulator, all of equal length");
         Self { first, rest, n }
     }
-
-    /// The first item's accumulator.
-    pub fn into_first(self) -> &'a mut [T] {
-        self.first
-    }
 }
 
-impl<T: Send> Split for Accumulators<'_, T> {
+impl<'a, T: Send> Split for Accumulators<'a, T> {
+    /// The first item's accumulator.
+    type Item = &'a mut [T];
     fn n_items(&self) -> usize {
         self.n
     }
@@ -441,6 +473,9 @@ impl<T: Send> Split for Accumulators<'_, T> {
                 n: self.n - mid,
             },
         )
+    }
+    fn into_item(self) -> &'a mut [T] {
+        self.first
     }
 }
 
@@ -505,8 +540,8 @@ mod tests {
         let offsets = [2, 2, 5, 6, 10];
         let mut items = [usize::MAX; 12];
         in_pool(3, || {
-            Threads::All.for_each_item(Pieces::new(&mut items[..], &offsets), |i, part| {
-                part.into_inner().fill(i);
+            Threads::All.for_each_item(Pieces::new(&mut items[..], &offsets), |i, piece| {
+                piece.fill(i);
             });
         });
         let max = usize::MAX;
@@ -555,14 +590,9 @@ mod tests {
         let mut out = vec![0usize; width];
         let mut rest = vec![0usize; (n_blocks - 1) * width];
         let state = Accumulators::new(&mut out, &mut rest, n_blocks);
-        fn leaf<'a>(
-            start: usize,
-            rows: Range<usize>,
-            acc: Accumulators<'a, usize>,
-        ) -> &'a mut [usize] {
+        fn leaf(start: usize, rows: Range<usize>, acc: &mut [usize]) -> &mut [usize] {
             assert_eq!(start, rows.start);
-            let acc = acc.into_first();
-            acc.iter_mut().for_each(|a| *a = rows.len());
+            acc.fill(rows.len());
             acc
         }
         let total = in_pool(4, || {
@@ -592,8 +622,8 @@ mod tests {
             Chunks::equal(&mut scratch, 3),
         );
         Threads::All.for_each_item(parts, |i, (rows, scratch)| {
-            rows.into_inner().fill(i);
-            scratch.into_values().fill(i + 10);
+            rows.fill(i);
+            scratch.fill(i + 10);
         });
         assert_eq!(rows, [0, 0, 0, 2, 2, 2, 2]);
         assert_eq!(scratch, [10, 10, 11, 11, 12, 12]);
@@ -603,7 +633,7 @@ mod tests {
     fn a_lone_item_takes_its_input_whole() {
         let (mut out, mut rest) = ([0usize; 2], [0usize; 0]);
         let accumulators = Accumulators::new(&mut out, &mut rest, 1);
-        Threads::All.for_each_item(accumulators, |i, acc| acc.into_first().fill(i + 1));
+        Threads::All.for_each_item(accumulators, |i, acc| acc.fill(i + 1));
         assert_eq!(out, [1, 1]);
         #[allow(clippy::reversed_empty_ranges)]
         let empty = 5..3;
@@ -660,9 +690,7 @@ mod tests {
         #[values(Threads::All, Threads::ONE, count(3))] budget: Threads,
     ) {
         let mut x = vec![usize::MAX; 100];
-        in_pool(4, || {
-            budget.for_each_item(&mut x[..], |i, part| part[0] = i)
-        });
+        in_pool(4, || budget.for_each_item(&mut x[..], |i, x| *x = i));
         assert_eq!(x, (0..100).collect::<Vec<_>>());
     }
 

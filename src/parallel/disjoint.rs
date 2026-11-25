@@ -55,7 +55,7 @@ enum Stored {
 impl<I: ListedIndex> Partition<I> {
     /// `sets` of indices below `n`, the listed ones taking `listed` in turn; an error unless they
     /// take all of it, every index is below `n` and none is in two sets. Allocates `n` bits once
-    /// the indices are known to be below `n`.
+    /// the runs are known to be below `n`.
     pub fn new(
         n: usize,
         listed: Box<[I]>,
@@ -78,25 +78,42 @@ impl<I: ListedIndex> Partition<I> {
         if end != listed.len() {
             return Err(PartitionError::ListedCount);
         }
-        if listed.iter().any(|&i| i.to_u64() >= n as u64) {
-            return Err(PartitionError::OutOfBounds);
-        }
         let partition = Self { n, listed, sets };
         let mut seen = vec![0u64; n.div_ceil(64)];
-        let mut once = |i: usize| {
-            let (word, bit) = (&mut seen[i / 64], 1 << (i % 64));
-            let fresh = *word & bit == 0;
-            *word |= bit;
-            fresh.then_some(()).ok_or(PartitionError::Overlap(i))
-        };
         for k in 0..partition.len() {
             match partition.members(k) {
-                Members::Run { start, len } => (start..start + len).try_for_each(&mut once)?,
-                Members::Listed(listed) => listed.iter().try_for_each(|&i| once(index(i)))?,
+                Members::Run { start, len } => mark(&mut seen, start..start + len)?,
+                Members::Listed(listed) => {
+                    listed
+                        .iter()
+                        .try_for_each(|&i| match i.to_u64() < n as u64 {
+                            true => mark(&mut seen, index(i)..index(i) + 1),
+                            false => Err(PartitionError::OutOfBounds),
+                        })?
+                }
             }
         }
         Ok(partition)
     }
+}
+
+/// Marks `run` in `seen`, one bit per index, a word at a time; an index marked already is in two
+/// sets.
+fn mark(seen: &mut [u64], run: std::ops::Range<usize>) -> Result<(), PartitionError> {
+    let mut i = run.start;
+    while i < run.end {
+        let (word, low) = (i / 64, i % 64);
+        let high = (run.end - word * 64).min(64);
+        let bits = (u64::MAX >> (64 - (high - low))) << low;
+        let clash = seen[word] & bits;
+        if clash != 0 {
+            let first = word * 64 + clash.trailing_zeros() as usize;
+            return Err(PartitionError::Overlap(first));
+        }
+        seen[word] |= bits;
+        i = word * 64 + high;
+    }
+    Ok(())
 }
 
 /// Why [`Partition::new`] rejects its sets.
@@ -366,6 +383,17 @@ mod tests {
     ) {
         let partition = Partition::new(9, listed.into_boxed_slice(), sets);
         assert_eq!(partition.err(), Some(error));
+    }
+
+    #[test]
+    fn runs_across_words_overlap_at_their_first_shared_index() {
+        let run = |start, len| Set::Run { start, len };
+        let tiled =
+            Partition::<u32>::new(200, Box::new([]), [run(0, 63), run(63, 130), run(193, 7)]);
+        assert_eq!(tiled.map(|p| p.len()), Ok(3));
+        let sets = [run(0, 100), run(150, 50), run(64, 200 - 64)];
+        let overlap = Partition::<u32>::new(200, Box::new([]), sets);
+        assert_eq!(overlap.err(), Some(PartitionError::Overlap(64)));
     }
 
     #[test]
