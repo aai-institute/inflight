@@ -10,7 +10,11 @@ description = "Primitives for numerical libraries: stop a running computation at
 repository = "https://github.com/aai-institute/inflight"
 categories = ["concurrency", "science"]
 keywords = ["cancellation", "progress", "parallel", "deterministic", "pyo3"]
-include = ["src/**/*.rs", "guides/*.md", "README.md", "CHANGELOG.md", "LICENSE"]
+include = ["/src/**/*.rs", "/guides/*.md", "/README.md", "/CHANGELOG.md", "/LICENSE"]
+
+# docs.rs builds default features alone otherwise, which leaves out `parallel` and the Python bridge.
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 dyn-stack = { version = "0.13.2", default-features = false, features = ["alloc"], optional = true }
