@@ -1,9 +1,12 @@
-//! Stop a running computation at the safe points it chooses, and learn why it stopped.
+//! Primitives for numerical libraries: stop a running computation at the safe points it chooses
+//! and learn why it stopped, and run parallel work whose results do not depend on the thread count.
 
 #![deny(missing_docs)]
 
 mod controls;
 mod observe;
+#[cfg(feature = "rayon")]
+pub mod parallel;
 #[cfg(feature = "pyo3")]
 mod python;
 

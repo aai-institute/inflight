@@ -1,6 +1,6 @@
 # inflight
 
-Stop a running computation at the safe points it chooses, and learn why it stopped.
+Primitives for numerical libraries: stop a running computation at the safe points it chooses and learn why it stopped, and run parallel work whose results do not depend on the thread count.
 
 `inflight` is the shared control and observation layer between long-running numerical libraries and their callers, including callers in Python. A library takes one `&dyn Observer<SolveScope>`, reports what it does, and checks it at its safe points. The caller decides what that observer is: a Ctrl-C flag, a deadline, a progress bar, a rule of its own, or any combination of these.
 
@@ -82,6 +82,18 @@ let outcome = inflight::interruptible_with(py, |py| progress.report(py), |signal
 ```
 
 `Stop` converts to `PyErr`: `Signal` to `KeyboardInterrupt`, `Deadline` to `TimeoutError`, `Requested` and `Rule` to `InterruptedError`.
+
+## Parallel work (`rayon` feature)
+
+`parallel` runs work on rayon's pool so that its results do not depend on how many threads run it:
+
+- `Threads` is a thread budget, and every loop that splits work is a method on it: `for_each_chunk` runs a closure over chunks of an input, `for_each_item` and `try_for_each_item` over its items, at most the budget's threads at once.
+- `fold_tree` sums leaves in a binary tree fixed by the input's length, never by the thread count, and `fold_tree_with` hands each leaf its own state, `fold_leaves` of them. `Split` is what they cut: slices, ranges, tuples of up to four of them, `Pieces` and `Chunks`.
+- `Workspaces` and `Regions` lay out stack room for tasks that run at once.
+- `Disjoint` lets tasks write one slice at once, each set of a `Partition` through its own claim; the sets are checked disjoint once, when built.
+- `isolated` runs work on a pool of its own, so a worker waiting on it cannot steal a job that waits on it.
+
+The `testing` feature adds checks that a result does not depend on the pool and that a computation keeps its budget: `testing::peak` counts the threads inside tasks at once on a pool of its own.
 
 ## Development
 
