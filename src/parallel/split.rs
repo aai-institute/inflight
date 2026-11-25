@@ -17,11 +17,6 @@ use super::{instrument_task, Threads};
 pub trait Split: Sized + Send {
     /// Number of items.
     fn n_items(&self) -> usize;
-    /// The work the items stand for, which decides whether [`Threads::fold_tree`] forks: the item
-    /// count unless an item stands for many, such as a run of rows.
-    fn weight(&self) -> usize {
-        self.n_items()
-    }
     /// The first `mid` items and the rest.
     fn split_at(self, mid: usize) -> (Self, Self);
 }
@@ -54,7 +49,7 @@ impl Split for Range<usize> {
     }
 }
 
-/// Inputs of one length, cut together; the heaviest one's work.
+/// Inputs of one length, cut together.
 macro_rules! zip {
     ($first:ident $(, $rest:ident)+) => {
         #[allow(non_snake_case)]
@@ -63,10 +58,6 @@ macro_rules! zip {
                 let ($first, $($rest),+) = self;
                 $(debug_assert_eq!($first.n_items(), $rest.n_items());)+
                 $first.n_items()
-            }
-            fn weight(&self) -> usize {
-                let ($first, $($rest),+) = self;
-                $first.weight()$(.max($rest.weight()))+
             }
             fn split_at(self, mid: usize) -> (Self, Self) {
                 let ($first, $($rest),+) = self;
@@ -92,8 +83,10 @@ pub fn fold_leaves(n_items: usize, block_len: usize) -> usize {
 impl Threads {
     /// `leaf(start, piece)` over pieces of `block_len` items of `input`, `start` the piece's first
     /// item, combined in a binary tree fixed by the length alone, so the result's bits do not
-    /// depend on the threads; a fork splits the budget in halves. An empty input is one leaf.
-    /// Panics if `block_len` is 0.
+    /// depend on the threads. Subtrees fork as rayon's adaptive splitter would, each fork halving
+    /// the budget, down to one leaf a task: `block_len` is the smallest task too, and work too
+    /// small to spread belongs under [`Threads::ONE`]. An empty input is one leaf. Panics if
+    /// `block_len` is 0.
     pub fn fold_tree<P: Split, T: Send>(
         self,
         input: P,
@@ -102,8 +95,13 @@ impl Threads {
         combine: impl Fn(T, T) -> T + Sync,
     ) -> T {
         let leaves = fold_leaves(input.n_items(), block_len);
-        let leaf = |start, piece, _| leaf(start, piece);
-        tree(0, input, 0..leaves, block_len, self, &leaf, &combine)
+        let leaf = move |start, piece, _| leaf(start, piece);
+        let fold = Fold {
+            block_len,
+            leaf,
+            combine,
+        };
+        tree(0, input, 0..leaves, Forks::new(self), &fold)
     }
 
     /// [`fold_tree`](Self::fold_tree), each leaf also owning its item of `state`, which has
@@ -118,44 +116,86 @@ impl Threads {
     ) -> T {
         let leaves = fold_leaves(input.n_items(), block_len);
         assert_eq!(state.n_items(), leaves, "one state per leaf");
-        tree(0, input, state, block_len, self, &leaf, &combine)
+        let fold = Fold {
+            block_len,
+            leaf,
+            combine,
+        };
+        tree(0, input, state, Forks::new(self), &fold)
     }
+}
+
+/// What every node of a fold shares.
+struct Fold<L, C> {
+    block_len: usize,
+    leaf: L,
+    combine: C,
 }
 
 fn tree<P: Split, S: Split, T: Send>(
     start: usize,
     input: P,
     state: S,
-    block_len: usize,
-    threads: Threads,
-    leaf: &(impl Fn(usize, P, S) -> T + Sync),
-    combine: &(impl Fn(T, T) -> T + Sync),
+    forks: Forks,
+    fold: &Fold<impl Fn(usize, P, S) -> T + Sync, impl Fn(T, T) -> T + Sync>,
 ) -> T {
-    let (pieces, weight) = (input.n_items().div_ceil(block_len), input.weight());
+    let pieces = input.n_items().div_ceil(fold.block_len);
     if pieces <= 1 {
-        return instrument_task(|| leaf(start, input, state));
+        return instrument_task(|| (fold.leaf)(start, input, state));
     }
     let half = pieces / 2;
-    let (left, right) = input.split_at(half * block_len);
+    let (left, right) = input.split_at(half * fold.block_len);
     let (left_state, right_state) = state.split_at(half);
-    let mid = start + half * block_len;
-    let (l, r) = if weight > SEQUENTIAL_WEIGHT && threads.tasks() > 1 {
-        let (first, second) = threads.halves();
-        rayon::join(
-            || tree(start, left, left_state, block_len, first, leaf, combine),
-            || tree(mid, right, right_state, block_len, second, leaf, combine),
+    let mid = start + half * fold.block_len;
+    let (l, r) = if forks.fork() {
+        let (first, second) = forks.threads.halves();
+        rayon::join_context(
+            |c| tree(start, left, left_state, forks.side(first, c), fold),
+            |c| tree(mid, right, right_state, forks.side(second, c), fold),
         )
     } else {
+        let forks = forks.serial();
         (
-            tree(start, left, left_state, block_len, threads, leaf, combine),
-            tree(mid, right, right_state, block_len, threads, leaf, combine),
+            tree(start, left, left_state, forks, fold),
+            tree(mid, right, right_state, forks, fold),
         )
     };
-    combine(l, r)
+    (fold.combine)(l, r)
 }
 
-/// Subtrees this light run on the calling thread: a `join` per piece costs more than it spreads.
-const SEQUENTIAL_WEIGHT: usize = 1 << 16;
+/// Whether a subtree forks, which leaves its bits alone: under its budget, while it has splits
+/// left, as rayon's adaptive splitter does. A fork halves the splits; a side another thread stole
+/// starts again from its budget's tasks.
+#[derive(Clone, Copy)]
+struct Forks {
+    threads: Threads,
+    splits: usize,
+}
+
+impl Forks {
+    fn new(threads: Threads) -> Self {
+        let splits = threads.tasks();
+        Self { threads, splits }
+    }
+
+    fn fork(self) -> bool {
+        self.splits > 0 && self.threads.tasks() > 1
+    }
+
+    /// One side of a fork, under `threads`, as its join `c` finds it.
+    fn side(self, threads: Threads, c: rayon::FnContext) -> Self {
+        let splits = match c.migrated() {
+            true => (self.splits / 2).max(threads.tasks()),
+            false => self.splits / 2,
+        };
+        Self { threads, splits }
+    }
+
+    /// Both sides on this thread: no split left to them.
+    fn serial(self) -> Self {
+        Self { splits: 0, ..self }
+    }
+}
 
 impl Threads {
     /// `f(start, chunk)` over `input` cut into chunks as [`per_task`](Self::per_task) says for
@@ -306,10 +346,6 @@ impl<'o, P: Split> Pieces<'o, P> {
 impl<P: Split> Split for Pieces<'_, P> {
     fn n_items(&self) -> usize {
         self.offsets.len() - 1
-    }
-    /// The work of the items the pieces hold.
-    fn weight(&self) -> usize {
-        self.inner.weight()
     }
     fn split_at(self, mid: usize) -> (Self, Self) {
         let (left, right) = self.inner.split_at(self.offsets[mid] - self.offsets[0]);
@@ -601,6 +637,22 @@ mod tests {
             });
         });
         assert_eq!(x, (0..1000).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_fold_runs_at_most_its_threads() {
+        // Unsplit, the leaves still run as tasks, one at a time.
+        for (budget, seen) in [
+            (Threads::ONE, 1..=1),
+            (count(3), 2..=3),
+            (Threads::All, 4..=8),
+        ] {
+            let peak = peak(8, || {
+                let leaf = |_, _| std::thread::sleep(Duration::from_millis(5));
+                budget.fold_tree(0..64, 1, leaf, |(), ()| ());
+            });
+            assert!(seen.contains(&peak), "{peak} threads under {budget:?}");
+        }
     }
 
     #[rstest]
