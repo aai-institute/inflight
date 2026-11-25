@@ -1,6 +1,9 @@
 //! One slice written by many tasks at once, each through a claim on a set of items no other set
 //! holds: the sets are checked once, when built, and each is handed out once.
-#![allow(unsafe_code)]
+#![allow(
+    unsafe_code,
+    reason = "claims of one slice, each set's items to one claim"
+)]
 
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -92,7 +95,7 @@ impl<I: ListedIndex> Partition<I> {
                         .try_for_each(|&i| match i.to_u64() < n as u64 {
                             true => mark(&mut seen, index(i)..index(i) + 1),
                             false => Err(PartitionError::OutOfBounds),
-                        })?
+                        })?;
                 }
             }
         }
@@ -194,7 +197,7 @@ impl<I: ListedIndex> Partition<I> {
 ///
 /// # Safety
 /// The slice holds every member, and no other access touches them while the claim lives.
-const unsafe fn claim<'a, I, V>(ptr: *mut V, members: Members<'a, I>) -> Claim<'a, I, V> {
+const unsafe fn claim<I, V>(ptr: *mut V, members: Members<'_, I>) -> Claim<'_, I, V> {
     match members {
         Members::Run { start, len } => {
             // SAFETY: the run starts inside the slice.

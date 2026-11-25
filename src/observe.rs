@@ -1,6 +1,6 @@
 use std::ops::ControlFlow;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -35,7 +35,7 @@ where
 
 /// No scopes and no events: a call that only checks, and may report its progress.
 impl Reports for std::convert::Infallible {
-    type Event = std::convert::Infallible;
+    type Event = Self;
 }
 
 /// How far a scope has got.
@@ -176,13 +176,13 @@ impl<S: Reports, O: Observer<S> + ?Sized> Observer<S> for Hears<'_, O> {
         self.0.open(scope)
     }
     fn progress(&self, progress: Progress) {
-        self.0.progress(progress)
+        self.0.progress(progress);
     }
     fn event(&self, event: &S::Event) {
-        self.0.event(event)
+        self.0.event(event);
     }
     fn closed(&self, closed: Closed) {
-        self.0.closed(closed)
+        self.0.closed(closed);
     }
 }
 
@@ -243,7 +243,7 @@ enum Listener<'s, S: Reports> {
 pub struct Scope<'s, S: Reports> {
     // Heard here since the instant; a parent's observer heard as `Hears`, so only the parent asks it.
     listener: Option<(Listener<'s, S>, Instant)>,
-    parent: Option<&'s Scope<'s, S>>,
+    parent: Option<&'s Self>,
     // The call's first stop, which every later check repeats.
     latch: &'s OnceLock<Stop>,
     // How it ended, when known before the drop; otherwise the drop infers it.
@@ -397,10 +397,7 @@ impl<'s, S: Reports> Scope<'s, S> {
 
     // Under the lock, so reports reach the observer in the order they were counted.
     fn report(&self, next: impl FnOnce(u64) -> u64, total: Option<u64>) {
-        let mut done = self
-            .done
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut done = self.done.lock().unwrap_or_else(PoisonError::into_inner);
         *done = next(*done);
         if let Some(observer) = self.observer() {
             observer.progress(Progress { done: *done, total });
@@ -537,7 +534,7 @@ impl<S: Reports> Drop for Scope<'_, S> {
             // A second panic out of a drop while unwinding aborts; the first is already on its way.
             match thread::panicking() {
                 true => drop(panic::catch_unwind(AssertUnwindSafe(|| {
-                    observer.closed(closed)
+                    observer.closed(closed);
                 }))),
                 false => observer.closed(closed),
             }

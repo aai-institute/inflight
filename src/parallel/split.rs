@@ -68,7 +68,7 @@ impl Split for Range<usize> {
 /// Inputs of one length, cut together.
 macro_rules! zip {
     ($first:ident $(, $rest:ident)+) => {
-        #[allow(non_snake_case)]
+        #[allow(non_snake_case, reason = "each binding takes its type parameter's name")]
         impl<$first: Split, $($rest: Split),+> Split for ($first, $($rest),+) {
             type Item = ($first::Item, $($rest::Item),+);
             fn n_items(&self) -> usize {
@@ -606,16 +606,16 @@ mod tests {
 
     #[test]
     fn leaves_own_their_accumulators_and_the_first_is_the_output() {
-        let (n, block_len, width) = (300_000, 1 << 15, 3);
-        let n_blocks = fold_leaves(n, block_len);
-        let mut out = vec![0usize; width];
-        let mut rest = vec![0usize; (n_blocks - 1) * width];
-        let state = Accumulators::new(&mut out, &mut rest, n_blocks);
         fn leaf(start: usize, rows: Range<usize>, acc: &mut [usize]) -> &mut [usize] {
             assert_eq!(start, rows.start);
             acc.fill(rows.len());
             acc
         }
+        let (n, block_len, width) = (300_000, 1 << 15, 3);
+        let n_blocks = fold_leaves(n, block_len);
+        let mut out = vec![0usize; width];
+        let mut rest = vec![0usize; (n_blocks - 1) * width];
+        let state = Accumulators::new(&mut out, &mut rest, n_blocks);
         let total = in_pool(4, || {
             (Threads::All)
                 .fold_tree_with(0..n, state, block_len, leaf, |left, right| {
@@ -656,7 +656,10 @@ mod tests {
         let accumulators = Accumulators::new(&mut out, &mut rest, 1);
         Threads::All.for_each_item(accumulators, |i, acc| acc.fill(i + 1));
         assert_eq!(out, [1, 1]);
-        #[allow(clippy::reversed_empty_ranges)]
+        #[allow(
+            clippy::reversed_empty_ranges,
+            reason = "an end before its start is empty"
+        )]
         let empty = 5..3;
         let len = Threads::All.fold_tree(empty, 2, |_, r: Range<usize>| r.len(), |a, b| a + b);
         assert_eq!(len, 0);
