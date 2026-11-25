@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- `parallel::instrument_task` and `parallel::testing::peak`: the thread count inside tasks is now a check of inflight's own tests. The `testing` feature no longer instruments every task of a loop, which cost its users' benchmarks; it keeps `assert_pool_independent` and `in_pool`.
+
 ## [0.2.0] - 2026-11-25
 
 ### Added

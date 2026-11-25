@@ -126,25 +126,10 @@ impl Schedule {
         items
             .enumerate()
             .with_min_len(per_task)
-            .map_init(&init, |s, (k, x)| {
-                instrument_task(|| f(s, k, x, within_task))
-            })
+            .map_init(&init, |s, (k, x)| f(s, k, x, within_task))
             .collect_into_vec(&mut out);
         out
     }
-}
-
-/// Runs `run` as one task of a split loop.
-///
-/// It does nothing but mark the task for `testing::peak` under the `testing` feature. This module's
-/// loops mark their tasks; a loop that splits work on rayon itself must run each task in it, or
-/// `peak` does not see the task.
-#[inline]
-pub fn instrument_task<R>(run: impl FnOnce() -> R) -> R {
-    #[cfg(any(test, feature = "testing"))]
-    return super::testing::counted(run);
-    #[cfg(not(any(test, feature = "testing")))]
-    run()
 }
 
 #[cfg(test)]
@@ -246,12 +231,12 @@ mod tests {
 
     #[test]
     fn a_count_runs_at_most_its_threads_in_chunks() {
-        // Unsplit, the calling thread runs it outside any task.
-        for (budget, seen) in [(Threads::ONE, 0..=0), (count(3), 2..=3)] {
-            let peak = crate::parallel::testing::peak(8, || {
+        use crate::parallel::count::{counted, peak};
+        for (budget, seen) in [(Threads::ONE, 1..=1), (count(3), 2..=3)] {
+            let peak = peak(8, || {
                 let mut x = vec![0u64; 1 << 16];
                 budget.for_each_chunk(&mut x[..], 1, |_, chunk| {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    counted(|| std::thread::sleep(std::time::Duration::from_millis(20)));
                     chunk.fill(1);
                 });
             });

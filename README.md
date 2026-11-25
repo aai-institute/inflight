@@ -93,7 +93,7 @@ let outcome = inflight::interruptible_with(py, |py| progress.report(py), |signal
 - `Disjoint` lets tasks write one slice at once, each set of a `Partition` through its own claim; the sets are checked disjoint once, when built.
 - `isolated` runs work on a pool of its own, so a worker waiting on it cannot steal a job that waits on it.
 
-The `testing` feature adds checks that a result does not depend on the pool and that a computation keeps its budget: `testing::peak` counts the threads inside tasks at once on a pool of its own.
+The `testing` feature adds `testing::assert_pool_independent`, which checks that a result does not depend on the pool, and `testing::in_pool`.
 
 ## Development
 
