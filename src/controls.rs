@@ -10,6 +10,7 @@ pub struct Flag(OnceLock<Stop>);
 
 impl Flag {
     /// Not raised.
+    #[must_use]
     pub const fn new() -> Self {
         Self(OnceLock::new())
     }
@@ -34,11 +35,13 @@ pub struct Deadline(Option<Instant>);
 
 impl Deadline {
     /// At `instant`.
-    pub fn at(instant: Instant) -> Self {
+    #[must_use]
+    pub const fn at(instant: Instant) -> Self {
         Self(Some(instant))
     }
 
     /// `budget` from now; a budget past what `Instant` holds never runs out.
+    #[must_use]
     pub fn after(budget: Duration) -> Self {
         Self(Instant::now().checked_add(budget))
     }

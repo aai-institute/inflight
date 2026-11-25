@@ -29,3 +29,17 @@ lint = "cargo clippy --all-targets --all-features -- -D warnings"
 test = { cmd = "cargo test --all-features --no-fail-fast", env = { DYLD_FALLBACK_LIBRARY_PATH = "$CONDA_PREFIX/lib", LD_LIBRARY_PATH = "$CONDA_PREFIX/lib" } }
 coverage = { cmd = "cargo llvm-cov --all-features --no-fail-fast --summary-only", env = { DYLD_FALLBACK_LIBRARY_PATH = "$CONDA_PREFIX/lib", LD_LIBRARY_PATH = "$CONDA_PREFIX/lib" } }
 deny = "cargo deny check"
+
+# Advisory, not a gate: every pedantic and nursery lint and the restriction lints a library answers
+# to, at tight thresholds. Its own target dir keeps them out of everyday clippy's cache.
+[tasks.smells]
+env = { CLIPPY_CONF_DIR = "$PIXI_PROJECT_ROOT/scripts/smells", CARGO_TARGET_DIR = "$PIXI_PROJECT_ROOT/target/smells" }
+cmd = """cargo clippy --all-targets --all-features -- \
+  -W clippy::pedantic -W clippy::nursery \
+  -W clippy::allow_attributes_without_reason -W clippy::as_conversions -W clippy::clone_on_ref_ptr \
+  -W clippy::dbg_macro -W clippy::excessive_nesting -W clippy::exhaustive_enums \
+  -W clippy::exhaustive_structs -W clippy::expect_used -W clippy::if_then_some_else_none \
+  -W clippy::indexing_slicing -W clippy::missing_assert_message -W clippy::multiple_unsafe_ops_per_block \
+  -W clippy::panic -W clippy::print_stderr -W clippy::print_stdout -W clippy::shadow_unrelated \
+  -W clippy::str_to_string -W clippy::todo -W clippy::undocumented_unsafe_blocks \
+  -W clippy::unimplemented -W clippy::unwrap_used -W clippy::wildcard_enum_match_arm"""

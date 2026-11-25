@@ -1,9 +1,12 @@
-//! Stop a running computation at the safe points it chooses, and learn why it stopped.
+//! Primitives for numerical libraries: stop a running computation at the safe points it chooses
+//! and learn why it stopped, and run parallel work whose results do not depend on the thread count.
 
 #![deny(missing_docs)]
 
 mod controls;
 mod observe;
+#[cfg(feature = "rayon")]
+pub mod parallel;
 #[cfg(feature = "pyo3")]
 mod python;
 
@@ -108,7 +111,10 @@ impl<R, S> Outcome<R, S> {
 }
 
 impl<R> Outcome<R> {
-    /// The result, or the stop, so that `?` carries an inner call's stop out.
+    /// The result, so that `?` carries an inner call's stop out.
+    ///
+    /// # Errors
+    /// The stop, if the call stopped.
     pub fn into_result(self) -> Result<R, Stop> {
         match self {
             Self::Completed(result) => Ok(result),
@@ -119,7 +125,7 @@ impl<R> Outcome<R> {
 
 impl Outcome<()> {
     /// `state` as the result, or as the residue a stopped call resumes from.
-    pub fn holding<T>(self, state: T) -> Outcome<T, T> {
+    pub const fn holding<T>(self, state: T) -> Outcome<T, T> {
         match self {
             Self::Completed(()) => Outcome::Completed(state),
             Self::Stopped { reason, .. } => Outcome::Stopped {

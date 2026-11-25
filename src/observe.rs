@@ -1,6 +1,6 @@
 use std::ops::ControlFlow;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -35,7 +35,7 @@ where
 
 /// No scopes and no events: a call that only checks, and may report its progress.
 impl Reports for std::convert::Infallible {
-    type Event = std::convert::Infallible;
+    type Event = Self;
 }
 
 /// How far a scope has got.
@@ -176,13 +176,13 @@ impl<S: Reports, O: Observer<S> + ?Sized> Observer<S> for Hears<'_, O> {
         self.0.open(scope)
     }
     fn progress(&self, progress: Progress) {
-        self.0.progress(progress)
+        self.0.progress(progress);
     }
     fn event(&self, event: &S::Event) {
-        self.0.event(event)
+        self.0.event(event);
     }
     fn closed(&self, closed: Closed) {
-        self.0.closed(closed)
+        self.0.closed(closed);
     }
 }
 
@@ -243,7 +243,7 @@ enum Listener<'s, S: Reports> {
 pub struct Scope<'s, S: Reports> {
     // Heard here since the instant; a parent's observer heard as `Hears`, so only the parent asks it.
     listener: Option<(Listener<'s, S>, Instant)>,
-    parent: Option<&'s Scope<'s, S>>,
+    parent: Option<&'s Self>,
     // The call's first stop, which every later check repeats.
     latch: &'s OnceLock<Stop>,
     // How it ended, when known before the drop; otherwise the drop infers it.
@@ -253,6 +253,9 @@ pub struct Scope<'s, S: Reports> {
 }
 
 /// Runs `body` as one call under `observer`; an error carrying the call's stop makes it [`Outcome::Stopped`], any other error wins. A stop for one part of the call belongs in [`Scope::under`].
+///
+/// # Errors
+/// The body's error, if it carries no stop of the call.
 pub fn try_run<S: Reports, R, E: Stopping>(
     observer: &(dyn Observer<S> + '_),
     body: impl FnOnce(&Scope<'_, S>) -> Result<R, E>,
@@ -268,6 +271,9 @@ pub fn try_run<S: Reports, R, E: Stopping>(
 }
 
 /// As [`try_run`], for a body whose error is [`Interrupted`]: every stop ends the call as [`Outcome::Stopped`], so only the algorithm's own error comes out.
+///
+/// # Errors
+/// The algorithm's own error, [`Interrupted::Own`].
 pub fn run_fallible<S: Reports, R, E>(
     observer: &(dyn Observer<S> + '_),
     body: impl FnOnce(&Scope<'_, S>) -> Result<R, Interrupted<E>>,
@@ -318,6 +324,9 @@ pub fn run<S: Reports, R>(
 
 impl<'s, S: Reports> Scope<'s, S> {
     /// Runs `body` as a part with its own start and end, which follows from what `body` returns.
+    ///
+    /// # Errors
+    /// `body`'s error.
     pub fn within<R, E: Stopping>(
         &self,
         scope: S,
@@ -330,6 +339,9 @@ impl<'s, S: Reports> Scope<'s, S> {
     }
 
     /// As [`within`](Self::within), for a body in vocabulary `I` that this one reads [`Within`]: its scopes join this tree, and its stops are this call's.
+    ///
+    /// # Errors
+    /// `body`'s error.
     pub fn within_as<I: Reports, R, E: Stopping>(
         &self,
         scope: S,
@@ -342,6 +354,9 @@ impl<'s, S: Reports> Scope<'s, S> {
     }
 
     /// As [`within`](Self::within), with `control` asked too: its stop ends only this part, as [`Outcome::Stopped`]; the call's stop is `Err`.
+    ///
+    /// # Errors
+    /// `body`'s error, unless it carries the part's own stop.
     pub fn under<R, E: Stopping>(
         &self,
         scope: S,
@@ -382,10 +397,7 @@ impl<'s, S: Reports> Scope<'s, S> {
 
     // Under the lock, so reports reach the observer in the order they were counted.
     fn report(&self, next: impl FnOnce(u64) -> u64, total: Option<u64>) {
-        let mut done = self
-            .done
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut done = self.done.lock().unwrap_or_else(PoisonError::into_inner);
         *done = next(*done);
         if let Some(observer) = self.observer() {
             observer.progress(Progress { done: *done, total });
@@ -399,7 +411,10 @@ impl<'s, S: Reports> Scope<'s, S> {
         }
     }
 
-    /// A safe point: `Err` if an observer, here or in a scope around this one, stops the call.
+    /// A safe point, where an observer here or in a scope around this one may stop the call.
+    ///
+    /// # Errors
+    /// The call's first stop, once one has stopped it.
     pub fn check(&self) -> Result<(), Stop> {
         match self.latched(Self::ask) {
             ControlFlow::Break(reason) => Err(reason),
@@ -408,6 +423,9 @@ impl<'s, S: Reports> Scope<'s, S> {
     }
 
     /// A scope `scope` inside this one, as the observer of an inner call: its scopes and events join this tree, its progress is this new scope's, and its checks and stops this call's.
+    ///
+    /// # Errors
+    /// `body`'s error.
     pub fn nest<R, E: Stopping>(
         &self,
         scope: S,
@@ -516,7 +534,7 @@ impl<S: Reports> Drop for Scope<'_, S> {
             // A second panic out of a drop while unwinding aborts; the first is already on its way.
             match thread::panicking() {
                 true => drop(panic::catch_unwind(AssertUnwindSafe(|| {
-                    observer.closed(closed)
+                    observer.closed(closed);
                 }))),
                 false => observer.closed(closed),
             }
