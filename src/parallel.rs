@@ -16,5 +16,5 @@ pub use disjoint::{
     Claim, Disjoint, ListedIndex, Members, Partition, PartitionError, Scattered, Set,
 };
 pub use isolated::isolated;
-pub use split::{fold_leaves, par_split, Accumulators, Chunks, Pieces, Split};
+pub use split::{fold_leaves, par_split, Accumulators, Blocks, Chunks, Pieces, Split};
 pub use stack::{Regions, Workspaces};

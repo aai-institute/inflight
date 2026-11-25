@@ -94,8 +94,8 @@ zip!(A, B);
 zip!(A, B, C);
 zip!(A, B, C, D);
 
-/// The leaves [`Threads::fold_tree`] cuts `n_items` items into, `block_len` each: at least one,
-/// as an empty input is one leaf.
+/// The blocks [`Blocks::new`] cuts `n_items` items into, `block_len` each: at least one, as an
+/// empty input is one block.
 ///
 /// # Panics
 /// If `block_len` is 0.
@@ -106,85 +106,49 @@ pub fn fold_leaves(n_items: usize, block_len: usize) -> usize {
 }
 
 impl Threads {
-    /// `leaf(start, piece)` over pieces of `block_len` items of `input`, `start` the piece's first
-    /// item, combined in a binary tree fixed by the length alone, so the result's bits do not
-    /// depend on the threads. Subtrees fork as rayon's adaptive splitter would, each fork halving
-    /// the budget, down to one leaf a task: `block_len` is the smallest task too, and work too
-    /// small to spread belongs under [`Threads::ONE`]. An empty input is one leaf.
+    /// `leaf` of each item of `input`, combined in a binary tree fixed by the item count alone, so
+    /// the result's bits do not depend on the threads. Subtrees fork as rayon's adaptive splitter
+    /// would, each fork halving the budget, down to one item a task: [`Blocks`] makes an item of
+    /// several, and work too small to spread belongs under [`Threads::ONE`].
     ///
     /// # Panics
-    /// If `block_len` is 0.
+    /// If `input` has no item.
     pub fn fold_tree<P: Split, T: Send>(
         self,
         input: P,
-        block_len: usize,
-        leaf: impl Fn(usize, P) -> T + Sync,
+        leaf: impl Fn(P::Item) -> T + Sync,
         combine: impl Fn(T, T) -> T + Sync,
     ) -> T {
-        let leaves = fold_leaves(input.n_items(), block_len);
-        let leaf = |start, piece, _| leaf(start, piece);
-        self.fold_tree_with(input, 0..leaves, block_len, leaf, combine)
-    }
-
-    /// [`fold_tree`](Self::fold_tree), each leaf also owning its item of `state`, which has
-    /// [`fold_leaves`] items.
-    ///
-    /// # Panics
-    /// If `block_len` is 0, or `state` does not have [`fold_leaves`] items.
-    pub fn fold_tree_with<P: Split, S: Split, T: Send>(
-        self,
-        input: P,
-        state: S,
-        block_len: usize,
-        leaf: impl Fn(usize, P, S::Item) -> T + Sync,
-        combine: impl Fn(T, T) -> T + Sync,
-    ) -> T {
-        let leaves = fold_leaves(input.n_items(), block_len);
-        assert_eq!(state.n_items(), leaves, "one state per leaf");
-        let leaf = move |start, piece, state: S| leaf(start, piece, state.into_item());
-        let fold = Fold {
-            block_len,
-            leaf,
-            combine,
-        };
-        tree(0, input, state, Forks::new(self), &fold)
+        assert!(input.n_items() > 0, "a fold of at least one item");
+        tree(input, Forks::new(self), &Fold { leaf, combine })
     }
 }
 
 /// What every node of a fold shares.
 struct Fold<L, C> {
-    block_len: usize,
     leaf: L,
     combine: C,
 }
 
-fn tree<P: Split, S: Split, T: Send>(
-    start: usize,
+fn tree<P: Split, T: Send>(
     input: P,
-    state: S,
     forks: Forks,
-    fold: &Fold<impl Fn(usize, P, S) -> T + Sync, impl Fn(T, T) -> T + Sync>,
+    fold: &Fold<impl Fn(P::Item) -> T + Sync, impl Fn(T, T) -> T + Sync>,
 ) -> T {
-    let pieces = input.n_items().div_ceil(fold.block_len);
-    if pieces <= 1 {
-        return instrument_task(|| (fold.leaf)(start, input, state));
+    let n = input.n_items();
+    if n <= 1 {
+        return instrument_task(|| (fold.leaf)(input.into_item()));
     }
-    let half = pieces / 2;
-    let (left, right) = input.split_at(half * fold.block_len);
-    let (left_state, right_state) = state.split_at(half);
-    let mid = start + half * fold.block_len;
+    let (left, right) = input.split_at(n / 2);
     let (l, r) = if forks.fork() {
         let (first, second) = forks.threads.halves();
         rayon::join_context(
-            |c| tree(start, left, left_state, forks.side(first, c), fold),
-            |c| tree(mid, right, right_state, forks.side(second, c), fold),
+            |c| tree(left, forks.side(first, c), fold),
+            |c| tree(right, forks.side(second, c), fold),
         )
     } else {
         let forks = forks.serial();
-        (
-            tree(start, left, left_state, forks, fold),
-            tree(mid, right, right_state, forks, fold),
-        )
+        (tree(left, forks, fold), tree(right, forks, fold))
     };
     (fold.combine)(l, r)
 }
@@ -406,6 +370,46 @@ impl<P: Split> Split for Pieces<'_, P> {
     }
 }
 
+/// An input cut into blocks of a length, the last one shorter, one per item: [`fold_leaves`] of
+/// them, so an empty input is one empty block.
+pub struct Blocks<P> {
+    inner: P,
+    len: usize,
+    start: usize,
+}
+
+impl<P: Split> Blocks<P> {
+    /// `inner` cut into blocks of `len` items.
+    ///
+    /// # Panics
+    /// If `len` is 0.
+    pub fn new(inner: P, len: usize) -> Self {
+        assert!(len > 0, "blocks of at least one item");
+        Self {
+            inner,
+            len,
+            start: 0,
+        }
+    }
+}
+
+impl<P: Split> Split for Blocks<P> {
+    /// A block's first item, by its index in the whole input, and its items.
+    type Item = (usize, P);
+    fn n_items(&self) -> usize {
+        fold_leaves(self.inner.n_items(), self.len)
+    }
+    fn split_at(self, mid: usize) -> (Self, Self) {
+        let (len, cut) = (self.len, mid * self.len);
+        let (left, right) = self.inner.split_at(cut);
+        let block = |inner, start| Self { inner, len, start };
+        (block(left, self.start), block(right, self.start + cut))
+    }
+    fn into_item(self) -> (usize, P) {
+        (self.start, self.inner)
+    }
+}
+
 /// A buffer cut into a count of equal chunks, one per item; rayon's `par_chunks_mut` takes their
 /// width instead.
 pub struct Chunks<'a, T> {
@@ -537,9 +541,8 @@ mod tests {
     #[case(1_000)]
     fn leaves_cover_the_input_once_in_order(#[case] n: usize) {
         let leaves = Threads::All.fold_tree(
-            0..n,
-            8,
-            |start, r: Range<usize>| {
+            Blocks::new(0..n, 8),
+            |(start, r): (usize, Range<usize>)| {
                 assert_eq!(start, r.start);
                 vec![r]
             },
@@ -587,9 +590,9 @@ mod tests {
             .map(|i| ((i * 2_654_435_761) % 997) as f64 * 10f64.powi((i % 31) as i32 - 15))
             .collect();
         let sum = |threads: Threads| {
-            let leaf = |_, c: &[f64]| c.iter().sum::<f64>();
+            let leaf = |(_, c): (usize, &[f64])| c.iter().sum::<f64>();
             threads
-                .fold_tree(x.as_slice(), 64, leaf, |a, b| a + b)
+                .fold_tree(Blocks::new(x.as_slice(), 64), leaf, |a, b| a + b)
                 .to_bits()
         };
         let reference = in_pool(1, || sum(Threads::All));
@@ -606,22 +609,28 @@ mod tests {
 
     #[test]
     fn leaves_own_their_accumulators_and_the_first_is_the_output() {
-        fn leaf(start: usize, rows: Range<usize>, acc: &mut [usize]) -> &mut [usize] {
-            assert_eq!(start, rows.start);
-            acc.fill(rows.len());
-            acc
-        }
         let (n, block_len, width) = (300_000, 1 << 15, 3);
         let n_blocks = fold_leaves(n, block_len);
         let mut out = vec![0usize; width];
         let mut rest = vec![0usize; (n_blocks - 1) * width];
-        let state = Accumulators::new(&mut out, &mut rest, n_blocks);
+        let leaves = (
+            Blocks::new(0..n, block_len),
+            Accumulators::new(&mut out, &mut rest, n_blocks),
+        );
         let total = in_pool(4, || {
             (Threads::All)
-                .fold_tree_with(0..n, state, block_len, leaf, |left, right| {
-                    left.iter_mut().zip(&*right).for_each(|(l, r)| *l += r);
-                    left
-                })
+                .fold_tree(
+                    leaves,
+                    |((start, rows), acc)| {
+                        assert_eq!(start, rows.start);
+                        acc.fill(rows.len());
+                        acc
+                    },
+                    |left: &mut [usize], right| {
+                        left.iter_mut().zip(&*right).for_each(|(l, r)| *l += r);
+                        left
+                    },
+                )
                 .to_vec()
         });
         assert_eq!(total, vec![n; width]);
@@ -661,7 +670,12 @@ mod tests {
             reason = "an end before its start is empty"
         )]
         let empty = 5..3;
-        let len = Threads::All.fold_tree(empty, 2, |_, r: Range<usize>| r.len(), |a, b| a + b);
+        let blocks = Blocks::new(empty, 2);
+        let len = Threads::All.fold_tree(
+            blocks,
+            |(_, r): (usize, Range<usize>)| r.len(),
+            |a, b| a + b,
+        );
         assert_eq!(len, 0);
     }
 
@@ -702,8 +716,8 @@ mod tests {
             (Threads::All, 4..=8),
         ] {
             let peak = peak(8, || {
-                let leaf = |_, _| std::thread::sleep(Duration::from_millis(5));
-                budget.fold_tree(0..64, 1, leaf, |(), ()| ());
+                let leaf = |_| std::thread::sleep(Duration::from_millis(5));
+                budget.fold_tree(0..64, leaf, |(), ()| ());
             });
             assert!(seen.contains(&peak), "{peak} threads under {budget:?}");
         }
