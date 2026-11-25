@@ -8,7 +8,7 @@ use std::sync::{Mutex, PoisonError};
 
 use rayon::iter::ParallelIterator;
 
-use super::{instrument_task, Threads};
+use super::Threads;
 
 /// An ordered input cut at an index into a prefix and a suffix, as rayon's producers are.
 ///
@@ -137,7 +137,7 @@ fn tree<P: Split, T: Send>(
 ) -> T {
     let n = input.n_items();
     if n <= 1 {
-        return instrument_task(|| (fold.leaf)(input.into_item()));
+        return (fold.leaf)(input.into_item());
     }
     let (left, right) = input.split_at(n / 2);
     let (l, r) = if forks.fork() {
@@ -223,9 +223,7 @@ impl Threads {
         if tasks <= 1 || n <= 1 {
             return items(0, input, &failed, &f);
         }
-        let run = |i, item| {
-            instrument_task(|| f(i, item)).inspect_err(|_| failed.store(true, Ordering::Release))
-        };
+        let run = |i, item| f(i, item).inspect_err(|_| failed.store(true, Ordering::Release));
         match self {
             Self::All => {
                 par_split(input).try_for_each(|(start, part)| items(start, part, &failed, &run))
@@ -239,7 +237,7 @@ impl Threads {
 fn chunks<P: Split>(start: usize, input: P, per: usize, f: &(impl Fn(usize, P) + Sync)) {
     let pieces = input.n_items().div_ceil(per);
     if pieces <= 1 {
-        return instrument_task(|| f(start, input));
+        return f(start, input);
     }
     let half = pieces / 2;
     let (left, right) = input.split_at(half * per);
@@ -525,7 +523,8 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
-    use crate::parallel::testing::{in_pool, peak};
+    use crate::parallel::count::{counted, peak};
+    use crate::parallel::testing::in_pool;
 
     fn count(n: usize) -> Threads {
         Threads::Count(NonZeroUsize::new(n).unwrap())
@@ -709,14 +708,13 @@ mod tests {
 
     #[test]
     fn a_fold_runs_at_most_its_threads() {
-        // Unsplit, the leaves still run as tasks, one at a time.
         for (budget, seen) in [
             (Threads::ONE, 1..=1),
             (count(3), 2..=3),
             (Threads::All, 4..=8),
         ] {
             let peak = peak(8, || {
-                let leaf = |_| std::thread::sleep(Duration::from_millis(5));
+                let leaf = |_| counted(|| std::thread::sleep(Duration::from_millis(5)));
                 budget.fold_tree(0..64, leaf, |(), ()| ());
             });
             assert!(seen.contains(&peak), "{peak} threads under {budget:?}");
@@ -734,10 +732,10 @@ mod tests {
 
     #[test]
     fn a_count_runs_at_most_its_threads_in_items() {
-        // On the calling thread alone, the items run outside any task.
-        for (budget, seen) in [(Threads::ONE, 0..=0), (count(3), 2..=3)] {
+        for (budget, seen) in [(Threads::ONE, 1..=1), (count(3), 2..=3)] {
             let peak = peak(8, || {
-                budget.for_each_item(0..16, |_, _| std::thread::sleep(Duration::from_millis(20)));
+                let item = |_, _| counted(|| std::thread::sleep(Duration::from_millis(20)));
+                budget.for_each_item(0..16, item);
             });
             assert!(seen.contains(&peak), "{peak} threads under {budget:?}");
         }

@@ -107,7 +107,7 @@ fn split(
     work: &(impl Fn(&mut MemStack) + Sync),
 ) {
     if workers == 1 {
-        return super::instrument_task(|| work(stack));
+        return work(stack);
     }
     let left = workers / 2;
     let carved = region.array(left);
