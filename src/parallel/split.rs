@@ -200,12 +200,8 @@ impl Threads {
         }
     }
 
-    /// `f(start, chunk)` of each chunk of `input`, the results in input order, `start` the chunk's
-    /// first item. Under a count, the chunks [`for_each_chunk`](Self::for_each_chunk) cuts, one a
-    /// task; under `All`, cut adaptively as [`par_split`] cuts, a few a thread, none shorter than
-    /// [`per_task`](Self::per_task) says for `grain`. Unsplit, `[f(0, input)]` on the calling
-    /// thread, even for an empty input. How many chunks there are follows the pool, so what the
-    /// caller makes of the results must not depend on where the cuts fall.
+    /// [`for_each_chunk`](Self::for_each_chunk) returning `f`'s results in input order; under
+    /// `All`, cut adaptively, a few chunks a thread.
     #[must_use]
     pub fn map_chunks<P: Split, R: Send>(
         self,
@@ -257,8 +253,7 @@ impl Threads {
     }
 }
 
-/// `f` of `input` cut at whole multiples of `per`, at most one task per chunk, the results in
-/// order.
+/// `f` of `input` cut at whole multiples of `per`, one task per chunk, the results in order.
 fn chunks<P: Split, R: Send>(
     start: usize,
     input: P,
@@ -540,8 +535,7 @@ pub fn par_split<P: Split>(input: P) -> impl ParallelIterator<Item = (usize, P)>
     split_at_least(input, 1)
 }
 
-/// [`par_split`], halving while both halves keep at least `per` items: an input under `2 * per`
-/// stays whole.
+/// [`par_split`] into parts of at least `per` items.
 fn split_at_least<P: Split>(input: P, per: usize) -> impl ParallelIterator<Item = (usize, P)> {
     rayon::iter::split((0, input), move |(start, input): (usize, P)| {
         let n = input.n_items();
@@ -772,7 +766,6 @@ mod tests {
             (chunks, budget.tasks())
         });
         assert_eq!(chunks.concat(), (5..5 + n).collect::<Vec<_>>());
-        // A count's last chunk, as `for_each_chunk`'s, takes what is left.
         let (last, rest) = chunks.split_last().unwrap();
         let whole = chunks.len() == 1 || budget != Threads::All || last.len() >= 7;
         assert!(whole && rest.iter().all(|c| c.len() >= 7), "{chunks:?}");

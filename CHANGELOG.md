@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `Threads::map_chunks` maps each chunk of an input to one result and returns the results in input order: under a count, one chunk a thread, as `for_each_chunk` cuts; under `All`, a few a thread, none shorter than a grain.
+- `Threads::map_chunks`: `for_each_chunk` returning each chunk's result, in input order.
 
 ## [0.3.0] - 2026-11-25
 
