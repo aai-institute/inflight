@@ -36,10 +36,9 @@ impl Threads {
     pub fn per_task(self, len: usize, grain: usize) -> Option<usize> {
         let tasks = self.tasks();
         let per = match self {
-            Self::All => grain,
-            Self::Count(_) => grain.max(len.div_ceil(tasks)),
-        }
-        .max(1);
+            Self::All => grain.max(1),
+            Self::Count(_) => bounded_per(len, grain, tasks),
+        };
         (per < len && tasks > 1).then_some(per)
     }
 
@@ -73,6 +72,12 @@ impl Threads {
             grain,
         }
     }
+}
+
+/// Items per piece when `len` items split into at most `tasks` pieces of at least `grain`, and at
+/// least one.
+pub(crate) fn bounded_per(len: usize, grain: usize, tasks: usize) -> usize {
+    grain.max(len.div_ceil(tasks)).max(1)
 }
 
 /// How a loop over items splits under a budget: into tasks of at least a grain of items, each item

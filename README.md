@@ -91,6 +91,7 @@ let outcome = inflight::interruptible_with(py, |py| progress.report(py), |signal
 - `fold_tree` sums its input's items in a binary tree fixed by their count, never by the thread count; `Blocks` cuts an input into blocks of a length, each a leaf with where it starts, and zipped with state, such as `Accumulators`, each leaf owns its own. `Split` is what they cut: slices, ranges, tuples of up to four of them, `Pieces`, `Chunks` and `Blocks`.
 - `Workspaces` and `Regions` lay out stack room for tasks that run at once.
 - `Disjoint` lets tasks write one slice at once, each set of a `Partition` through its own claim; the sets are checked disjoint once, when built.
+- `places` is for output whose size shows only once computed, such as rows grouped by key: each chunk of an input tallies its entries per bucket into `Places`, whose `place` hands each chunk its `Slots`, the runs of one output the tally gave it. Where `Disjoint` takes sets known up front, `Places` finds them by counting.
 - `isolated` runs work on a pool of its own, so a worker waiting on it cannot steal a job that waits on it.
 
 The `testing` feature adds `testing::assert_pool_independent`, which checks that a result does not depend on the pool, and `testing::in_pool`.
