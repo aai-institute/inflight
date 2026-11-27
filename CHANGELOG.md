@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-27
+
 ### Added
 
 - `Threads::map_chunks`: `for_each_chunk` returning each chunk's result, in input order.
@@ -54,7 +56,8 @@ First release.
 - A debug build panics when a body swallows a `check()` stop and returns `Ok`.
 - `pyo3` feature: `interruptible` and `interruptible_with` stop a computation on Ctrl-C while it runs with the GIL released; `Limits` turns a `timeout` into a stop; `ProgressCallback` hands progress to a Python `progress(done, total)`; `Stop` converts to `PyErr`.
 
-[Unreleased]: https://github.com/aai-institute/inflight/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/aai-institute/inflight/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/aai-institute/inflight/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/aai-institute/inflight/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aai-institute/inflight/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/aai-institute/inflight/compare/v0.1.0...v0.1.1
