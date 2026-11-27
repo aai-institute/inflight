@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking**, so the next release is 0.4.0: `testing::assert_pool_independent` requires an `Eq` result. Callers pass bit patterns, such as `f64::to_bits`; `Eq` rules out bare floats, where `0.0 == -0.0` and a NaN never equals itself.
+- `testing::assert_pool_independent` runs pools of 2 and 3 threads, then one pool with more threads than cores and at least 8 (it was 2, 3 and 8) twice: the rerun may catch a result that depends on the order in which threads finish.
+
 ## [0.3.1] - 2026-11-27
 
 ### Added
