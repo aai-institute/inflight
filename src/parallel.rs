@@ -8,6 +8,7 @@ mod budget;
 mod count;
 mod disjoint;
 mod isolated;
+mod places;
 mod split;
 mod stack;
 #[cfg(any(test, feature = "testing"))]
@@ -18,5 +19,6 @@ pub use disjoint::{
     Claim, Disjoint, ListedIndex, Members, Partition, PartitionError, Scattered, Set,
 };
 pub use isolated::isolated;
+pub use places::{Places, Slots};
 pub use split::{fold_leaves, par_split, Accumulators, Blocks, Chunks, Pieces, Split};
 pub use stack::{Regions, Workspaces};
