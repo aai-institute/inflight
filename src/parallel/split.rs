@@ -193,8 +193,28 @@ impl Threads {
     /// cuts follow the pool's size, so each item's result must not depend on where they fall.
     pub fn for_each_chunk<P: Split>(self, input: P, grain: usize, f: impl Fn(usize, P) + Sync) {
         match self.per_task(input.n_items(), grain) {
-            Some(per) => chunks(0, input, per, &f),
+            Some(per) => {
+                chunks(0, input, per, &f);
+            }
             None => f(0, input),
+        }
+    }
+
+    /// [`for_each_chunk`](Self::for_each_chunk) returning `f`'s results in input order; under
+    /// `All`, cut adaptively, into as many chunks as rayon's stealing makes.
+    #[must_use]
+    pub fn map_chunks<P: Split, R: Send>(
+        self,
+        input: P,
+        grain: usize,
+        f: impl Fn(usize, P) -> R + Sync,
+    ) -> Vec<R> {
+        match (self, self.per_task(input.n_items(), grain)) {
+            (_, None) => vec![f(0, input)],
+            (Self::Count(_), Some(per)) => chunks(0, input, per, &f),
+            (Self::All, Some(per)) => (split_at_least(input, per))
+                .map(|(start, chunk)| f(start, chunk))
+                .collect(),
         }
     }
 
@@ -233,18 +253,25 @@ impl Threads {
     }
 }
 
-/// `f` over `input` cut at whole multiples of `per`, at most one task per chunk.
-fn chunks<P: Split>(start: usize, input: P, per: usize, f: &(impl Fn(usize, P) + Sync)) {
+/// `f` of `input` cut at whole multiples of `per`, one task per chunk, the results in order.
+fn chunks<P: Split, R: Send>(
+    start: usize,
+    input: P,
+    per: usize,
+    f: &(impl Fn(usize, P) -> R + Sync),
+) -> Vec<R> {
     let pieces = input.n_items().div_ceil(per);
     if pieces <= 1 {
-        return f(start, input);
+        return vec![f(start, input)];
     }
     let half = pieces / 2;
     let (left, right) = input.split_at(half * per);
-    rayon::join(
+    let (mut left, mut right) = rayon::join(
         || chunks(start, left, per, f),
         || chunks(start + half * per, right, per, f),
     );
+    left.append(&mut right);
+    left
 }
 
 /// `f` of each item of `rest` in order, the first item `start`, until one fails or `failed` is
@@ -505,9 +532,14 @@ impl<'a, T: Send> Split for Accumulators<'a, T> {
 /// `input` cut adaptively by rayon's `split`, each part with the index of its first item, on the
 /// whole pool: how many parts there are follows the pool, so a result must not depend on it.
 pub fn par_split<P: Split>(input: P) -> impl ParallelIterator<Item = (usize, P)> {
-    rayon::iter::split((0, input), |(start, input): (usize, P)| {
+    split_at_least(input, 1)
+}
+
+/// [`par_split`] into parts of at least `per` items.
+fn split_at_least<P: Split>(input: P, per: usize) -> impl ParallelIterator<Item = (usize, P)> {
+    rayon::iter::split((0, input), move |(start, input): (usize, P)| {
         let n = input.n_items();
-        if n < 2 {
+        if n / 2 < per {
             return ((start, input), None);
         }
         let (left, right) = input.split_at(n / 2);
@@ -716,6 +748,47 @@ mod tests {
             let peak = peak(8, || {
                 let leaf = |_| counted(|| std::thread::sleep(Duration::from_millis(5)));
                 budget.fold_tree(0..64, leaf, |(), ()| ());
+            });
+            assert!(seen.contains(&peak), "{peak} threads under {budget:?}");
+        }
+    }
+
+    #[rstest]
+    fn mapped_chunks_cover_the_input_once_in_order(
+        #[values(Threads::All, Threads::ONE, count(3))] budget: Threads,
+        #[values(0, 7, 15, 1_000)] n: usize,
+    ) {
+        let (chunks, tasks) = in_pool(4, || {
+            let chunks = budget.map_chunks(5..5 + n, 7, |start, chunk| {
+                assert_eq!(5 + start, chunk.start);
+                chunk.collect::<Vec<_>>()
+            });
+            (chunks, budget.tasks())
+        });
+        assert_eq!(chunks.concat(), (5..5 + n).collect::<Vec<_>>());
+        let (last, rest) = chunks.split_last().unwrap();
+        let whole = chunks.len() == 1 || budget != Threads::All || last.len() >= 7;
+        assert!(whole && rest.iter().all(|c| c.len() >= 7), "{chunks:?}");
+        assert!(
+            budget == Threads::All || chunks.len() <= tasks,
+            "{chunks:?}"
+        );
+    }
+
+    #[test]
+    fn a_count_maps_one_chunk_a_thread() {
+        let starts = in_pool(4, || count(3).map_chunks(0..1_000, 7, |start, _| start));
+        assert_eq!(starts, [0, 334, 668]);
+        let starts = in_pool(4, || count(4).map_chunks(0..10, 1, |start, _| start));
+        assert_eq!(starts, [0, 3, 6, 9]);
+    }
+
+    #[test]
+    fn a_count_runs_at_most_its_threads_in_mapped_chunks() {
+        for (budget, seen) in [(Threads::ONE, 1..=1), (count(3), 2..=3)] {
+            let peak = peak(8, || {
+                let chunk = |_, _| counted(|| std::thread::sleep(Duration::from_millis(20)));
+                let _ = budget.map_chunks(0..8, 1, chunk);
             });
             assert!(seen.contains(&peak), "{peak} threads under {budget:?}");
         }

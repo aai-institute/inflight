@@ -87,7 +87,7 @@ let outcome = inflight::interruptible_with(py, |py| progress.report(py), |signal
 
 `parallel` runs work on rayon's pool so that its results do not depend on how many threads run it:
 
-- `Threads` is a thread budget, and every loop that splits work is a method on it: `for_each_chunk` runs a closure over chunks of an input, `for_each_item` and `try_for_each_item` over its items, handed as `Split::Item`, at most the budget's threads at once.
+- `Threads` is a thread budget, and every loop that splits work is a method on it: `for_each_chunk` runs a closure over chunks of an input, `map_chunks` maps each chunk to one result and returns the results in order, `for_each_item` and `try_for_each_item` over its items, handed as `Split::Item`, at most the budget's threads at once.
 - `fold_tree` sums its input's items in a binary tree fixed by their count, never by the thread count; `Blocks` cuts an input into blocks of a length, each a leaf with where it starts, and zipped with state, such as `Accumulators`, each leaf owns its own. `Split` is what they cut: slices, ranges, tuples of up to four of them, `Pieces`, `Chunks` and `Blocks`.
 - `Workspaces` and `Regions` lay out stack room for tasks that run at once.
 - `Disjoint` lets tasks write one slice at once, each set of a `Partition` through its own claim; the sets are checked disjoint once, when built.
