@@ -201,7 +201,7 @@ impl Threads {
     }
 
     /// [`for_each_chunk`](Self::for_each_chunk) returning `f`'s results in input order; under
-    /// `All`, cut adaptively, a few chunks a thread.
+    /// `All`, cut adaptively, into as many chunks as rayon's stealing makes.
     #[must_use]
     pub fn map_chunks<P: Split, R: Send>(
         self,
