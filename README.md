@@ -94,7 +94,7 @@ let outcome = inflight::interruptible_with(py, |py| progress.report(py), |signal
 - `places` is for output whose size shows only once computed, such as rows grouped by key: each chunk of an input tallies its entries per bucket into `Places`, whose `place` hands each chunk its `Slots`, the runs of one output the tally gave it. Where `Disjoint` takes sets known up front, `Places` finds them by counting.
 - `isolated` runs work on a pool of its own, so a worker waiting on it cannot steal a job that waits on it.
 
-The `testing` feature adds `testing::assert_pool_independent`, which checks that a result does not depend on the pool, and `testing::in_pool`.
+The `testing` feature adds `testing::assert_pool_independent`, which checks that a result does not depend on the pool, and `testing::in_pool`, which runs a test in a fresh pool of a given size.
 
 ## Development
 
