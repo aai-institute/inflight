@@ -7,14 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-28
+
 ### Added
 
 - `Threads::places`: output whose size shows only once computed, such as rows grouped by key, placed bucket by bucket and in input order within each, whatever the thread count.
 
 ### Changed
 
-- **Breaking**, so the next release is 0.4.0: `testing::assert_pool_independent` requires an `Eq` result. Callers pass bit patterns, such as `f64::to_bits`; `Eq` rules out bare floats, where `0.0 == -0.0` and a NaN never equals itself.
-- `testing::assert_pool_independent` runs pools of 2 and 3 threads, then one pool with more threads than cores and at least 8 (it was 2, 3 and 8) twice: the rerun may catch a result that depends on the order in which threads finish.
+- **Breaking:** `testing::assert_pool_independent` requires an `Eq` result; pass floats as bits, such as `f64::to_bits`.
+- `testing::assert_pool_independent` reruns one pool with more threads than cores.
 
 ## [0.3.1] - 2026-11-27
 
@@ -65,7 +67,8 @@ First release.
 - A debug build panics when a body swallows a `check()` stop and returns `Ok`.
 - `pyo3` feature: `interruptible` and `interruptible_with` stop a computation on Ctrl-C while it runs with the GIL released; `Limits` turns a `timeout` into a stop; `ProgressCallback` hands progress to a Python `progress(done, total)`; `Stop` converts to `PyErr`.
 
-[Unreleased]: https://github.com/aai-institute/inflight/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/aai-institute/inflight/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/aai-institute/inflight/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/aai-institute/inflight/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/aai-institute/inflight/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aai-institute/inflight/compare/v0.1.1...v0.2.0
