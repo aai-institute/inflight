@@ -1,0 +1,14 @@
+# Timings of inflight's loops, base against candidate; never published, outside the library's build.
+[package]
+name = "inflight-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[dependencies]
+inflight = { path = "..", features = ["rayon"] }
+rayon = "1.10"
+
+# Its own workspace: the library's build and lock file never see this crate.
+[workspace]

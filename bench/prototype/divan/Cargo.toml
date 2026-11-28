@@ -1,0 +1,20 @@
+[package]
+name = "inflight-pair-divan"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[dependencies]
+inflight-bench = { path = "../.." }
+inflight-base = { path = "../../target/pair-base-95b5382", features = ["rayon"] }
+inflight = { path = "../../..", features = ["rayon"] }
+rayon = "1.10"
+divan = "0.1.21"
+
+[profile.release]
+debug = false
+codegen-units = 1
+
+# The base tree comes from a `compare` run against 95b5382.
+[workspace]
