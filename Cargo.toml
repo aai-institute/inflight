@@ -29,7 +29,8 @@ pyo3 = ["dep:pyo3"]
 rayon = ["dep:rayon", "dep:dyn-stack"]
 testing = ["rayon"]
 
-# Denied, not forbidden: `parallel::disjoint` alone allows it, for claims on one shared slice.
+# Denied, not forbidden: `parallel::disjoint` and `parallel::places` alone allow it, for tasks writing
+# one shared slice.
 [lints.rust]
 unsafe_code = "deny"
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Threads::places`: output whose size shows only once computed, such as rows grouped by key, placed bucket by bucket and in input order within each, whatever the thread count.
+
 ### Changed
 
 - **Breaking**, so the next release is 0.4.0: `testing::assert_pool_independent` requires an `Eq` result. Callers pass bit patterns, such as `f64::to_bits`; `Eq` rules out bare floats, where `0.0 == -0.0` and a NaN never equals itself.
