@@ -616,9 +616,26 @@ mod tests {
 
     #[test]
     fn the_sum_does_not_depend_on_the_pool() {
-        // Magnitudes over 30 decades, so any change of summation order changes the bits.
+        // Terms of ±1e16 at irregular places, alternating in sign, among small integers: where the
+        // leaves are cut decides which small terms are lost to rounding. Measured on one thread:
+        // leaves of 1 to 512 terms give 401 different sums, none equal to leaves of 64, and one
+        // chunk per thread gives other sums than one chunk for 2 to 65 threads. The input before
+        // gave 4 sums, the same for leaves of 16, 32, 48 and 208, so a leaf of 16 per thread passed.
+        let mut large = 0;
         let x: Vec<f64> = (0..100_003u64)
-            .map(|i| ((i * 2_654_435_761) % 997) as f64 * 10f64.powi((i % 31) as i32 - 15))
+            .map(|i| {
+                let h = i.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32;
+                if h % 9 == 0 {
+                    large += 1;
+                    if large % 2 == 1 {
+                        1e16
+                    } else {
+                        -1e16
+                    }
+                } else {
+                    (h % 7 + 1) as f64
+                }
+            })
             .collect();
         let sum = |budget: Threads| {
             let leaf = |(_, c): (usize, &[f64])| c.iter().sum::<f64>();
