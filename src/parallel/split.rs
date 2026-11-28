@@ -556,7 +556,7 @@ mod tests {
 
     use super::*;
     use crate::parallel::count::{counted, peak};
-    use crate::parallel::testing::in_pool;
+    use crate::parallel::testing::{assert_pool_independent, in_pool};
 
     fn count(n: usize) -> Threads {
         Threads::Count(NonZeroUsize::new(n).unwrap())
@@ -620,22 +620,16 @@ mod tests {
         let x: Vec<f64> = (0..100_003u64)
             .map(|i| ((i * 2_654_435_761) % 997) as f64 * 10f64.powi((i % 31) as i32 - 15))
             .collect();
-        let sum = |threads: Threads| {
+        let sum = |budget: Threads| {
             let leaf = |(_, c): (usize, &[f64])| c.iter().sum::<f64>();
-            threads
+            budget
                 .fold_tree(Blocks::new(x.as_slice(), 64), leaf, |a, b| a + b)
                 .to_bits()
         };
-        let reference = in_pool(1, || sum(Threads::All));
-        for threads in [2, 3, 8] {
-            for budget in [Threads::All, Threads::ONE, count(3)] {
-                assert_eq!(
-                    in_pool(threads, || sum(budget)),
-                    reference,
-                    "{threads} threads"
-                );
-            }
-        }
+        // Every budget's sum in every pool equals its one-thread sum, and those equal each other.
+        let [all, one, three] =
+            assert_pool_independent(|| [Threads::All, Threads::ONE, count(3)].map(&sum));
+        assert_eq!([one, three], [all, all]);
     }
 
     #[test]

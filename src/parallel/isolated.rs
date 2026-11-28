@@ -34,6 +34,7 @@ mod tests {
     use std::time::Duration;
 
     use super::isolated;
+    use crate::parallel::testing::in_pool;
 
     thread_local! {
         static ON_CALLER_POOL: Cell<bool> = const { Cell::new(false) };
@@ -63,13 +64,9 @@ mod tests {
     /// is not enough.
     #[test]
     fn a_worker_waiting_on_it_runs_nothing_else() {
-        let caller = rayon::ThreadPoolBuilder::new()
-            .num_threads(1)
-            .build()
-            .expect("caller pool");
         let ran = Arc::new(AtomicBool::new(false));
         let queued = Arc::clone(&ran);
-        caller.install(move || {
+        in_pool(1, move || {
             rayon::spawn(move || queued.store(true, Ordering::SeqCst));
             isolated(|| std::thread::sleep(Duration::from_millis(50))).expect("isolated");
             assert!(
