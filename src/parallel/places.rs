@@ -191,7 +191,7 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
-    use crate::parallel::testing::in_pool;
+    use crate::parallel::testing::{assert_pool_independent, in_pool};
 
     fn count(n: usize) -> Threads {
         Threads::Count(NonZeroUsize::new(n).unwrap())
@@ -215,27 +215,29 @@ mod tests {
         rows
     }
 
-    #[rstest]
-    fn a_sort_by_key_is_stable_under_every_budget(
-        #[values(Threads::All, Threads::ONE, count(2), count(3), count(7))] threads: Threads,
-        #[values(1, 4)] pool: usize,
-    ) {
+    #[test]
+    fn a_sort_by_key_is_stable_under_every_budget() {
         let keys: Vec<u32> = (0..1000u32).map(|i| (i * 7919) % 13).collect();
         let mut serial: Vec<u32> = (0..1000).collect();
         serial.sort_by_key(|&i| keys[i as usize]);
-        let (offsets, rows) = in_pool(pool, || {
-            let places = by_key(threads, &keys, 13);
-            (
-                places.offsets().collect::<Vec<_>>(),
-                fill_rows(&places, &keys),
-            )
+        let budgets = [Threads::All, Threads::ONE, count(2), count(3), count(7)];
+        let grouped = assert_pool_independent(|| {
+            budgets.map(|threads| {
+                let places = by_key(threads, &keys, 13);
+                (
+                    places.offsets().collect::<Vec<_>>(),
+                    fill_rows(&places, &keys),
+                )
+            })
         });
-        assert_eq!(rows, serial);
-        assert_eq!(offsets.len(), 14);
-        for (b, w) in offsets.windows(2).enumerate() {
-            assert!(rows[w[0]..w[1]]
-                .iter()
-                .all(|&i| keys[i as usize] == b as u32));
+        for (threads, (offsets, rows)) in budgets.iter().zip(grouped) {
+            assert_eq!(rows, serial, "{threads:?}");
+            assert_eq!(offsets.len(), 14);
+            for (b, w) in offsets.windows(2).enumerate() {
+                assert!(rows[w[0]..w[1]]
+                    .iter()
+                    .all(|&i| keys[i as usize] == b as u32));
+            }
         }
     }
 
@@ -261,13 +263,14 @@ mod tests {
         (ptr, entries)
     }
 
-    #[rstest]
-    fn rows_of_computed_length_are_the_serial_rows_under_every_budget(
-        #[values(Threads::All, count(2), count(3), count(7))] threads: Threads,
-        #[values(1, 4)] pool: usize,
-    ) {
+    #[test]
+    fn rows_of_computed_length_are_the_serial_rows_under_every_budget() {
         let serial = rows(Threads::ONE, 300);
-        assert_eq!(in_pool(pool, || rows(threads, 300)), serial);
+        let budgets = [Threads::All, count(2), count(3), count(7)];
+        let placed = assert_pool_independent(|| budgets.map(|threads| rows(threads, 300)));
+        for (threads, placed) in budgets.iter().zip(placed) {
+            assert_eq!(placed, serial, "{threads:?}");
+        }
         let (ptr, entries) = serial;
         assert_eq!(&entries[ptr[7]..ptr[8]], &[2, 4, 6]);
     }

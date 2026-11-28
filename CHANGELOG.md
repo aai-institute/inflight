@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `testing::assert_pool_independent` returns the one-thread value, so a caller checks it further without another run; a test that ends with the call needs a semicolon.
+
 ## [0.4.0] - 2026-11-28
 
 ### Added

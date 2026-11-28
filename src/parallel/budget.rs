@@ -140,13 +140,7 @@ impl Schedule {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn pool(threads: usize) -> rayon::ThreadPool {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .unwrap()
-    }
+    use crate::parallel::testing::in_pool;
 
     fn count(n: usize) -> Threads {
         Threads::Count(NonZeroUsize::new(n).unwrap())
@@ -154,7 +148,7 @@ mod tests {
 
     #[test]
     fn all_splits_by_the_grain() {
-        pool(4).install(|| {
+        in_pool(4, || {
             for len in [0, 1, 2, 7, 100, 4097] {
                 for grain in [0, 1, 625] {
                     let per = grain.max(1);
@@ -167,7 +161,7 @@ mod tests {
 
     #[test]
     fn a_count_splits_into_at_most_its_tasks() {
-        pool(9).install(|| {
+        in_pool(9, || {
             for n in 1..=9 {
                 for len in [0, 1, 2, 7, 8, 9, 100, 4097, 100_003] {
                     for grain in [0, 1, 625] {
@@ -194,10 +188,10 @@ mod tests {
 
     #[test]
     fn a_count_splits_into_at_most_the_pools_threads() {
-        pool(3).install(|| {
+        in_pool(3, || {
             assert_eq!(count(8).per_task(100, 1), Some(34));
         });
-        pool(1).install(|| {
+        in_pool(1, || {
             for threads in [Threads::All, count(8)] {
                 assert_eq!(threads.per_task(100, 1), None, "{threads:?}");
             }
@@ -217,16 +211,16 @@ mod tests {
 
     #[test]
     fn a_schedule_shares_the_budget_among_its_tasks() {
-        let budgets = pool(8).install(|| count(4).schedule(1).map(0..2, |k, _, t| (k, t)));
+        let budgets = in_pool(8, || count(4).schedule(1).map(0..2, |k, _, t| (k, t)));
         assert_eq!(budgets, [(0, count(2)), (1, count(2))]);
-        let serial = pool(8).install(|| count(4).schedule(5).map(0..2, |_, _, t| t));
+        let serial = in_pool(8, || count(4).schedule(5).map(0..2, |_, _, t| t));
         assert_eq!(serial, [count(4), count(4)]);
     }
 
     #[test]
     fn chunks_cover_the_slice_once_with_their_starts() {
         let mut x = vec![usize::MAX; 1000];
-        pool(4).install(|| {
+        in_pool(4, || {
             Threads::All.for_each_chunk(&mut x[..], 7, |start, chunk| {
                 (start..).zip(chunk).for_each(|(i, x)| *x = i);
             });

@@ -60,9 +60,12 @@ fn last_threads(cores: usize) -> usize {
 /// assert_pool_independent(|| -0.0_f64);
 /// ```
 ///
+/// Returns the one-thread value, so a caller checks it further without another run. It stands for the other
+/// pools' values as far as `Eq` means identical, as it does for bit patterns.
+///
 /// # Panics
 /// If a run's value differs from one thread's, or a pool fails to build.
-pub fn assert_pool_independent<R: Eq + Send>(f: impl Fn() -> R + Sync) {
+pub fn assert_pool_independent<R: Eq + Send>(f: impl Fn() -> R + Sync) -> R {
     let reference = in_pool(1, &f);
     for threads in COUNTS {
         // Not `assert_eq!`: a printed solution vector would bury the thread count.
@@ -76,6 +79,7 @@ pub fn assert_pool_independent<R: Eq + Send>(f: impl Fn() -> R + Sync) {
             "{threads} threads, run {run}"
         );
     }
+    reference
 }
 
 #[cfg(test)]
