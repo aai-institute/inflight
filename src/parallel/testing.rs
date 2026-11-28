@@ -1,4 +1,6 @@
-//! Checks that a result does not depend on the pool. Behind the `testing` feature.
+//! Pools for tests: a check that a result does not depend on the pool, and a fresh pool of a given
+//! size to run a test in, for results that must not depend on its size and for those that do, such as
+//! a budget capped by the pool. Behind the `testing` feature.
 
 /// Thread counts that run `f` once each, after the one-thread reference.
 const COUNTS: [usize; 2] = [2, 3];
@@ -9,7 +11,8 @@ const LAST_AT_LEAST: usize = 8;
 /// How often the last pool runs `f`: a rerun may catch a result that depends on the order in which threads finish.
 const RUNS: usize = 2;
 
-/// Runs `f` in a fresh pool of `threads`.
+/// Runs `f` in a fresh pool of `threads`: no other test's work in it, and as many threads as asked
+/// whatever the machine.
 ///
 /// # Panics
 /// If the pool fails to build.
