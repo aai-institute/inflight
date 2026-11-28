@@ -38,6 +38,14 @@ fn last_threads(cores: usize) -> usize {
 /// with more threads than cores and at least 8; the rerun may catch a result that depends on the order in which
 /// threads finish.
 ///
+/// A pass samples finishing orders; it does not cover them. A loop whose result is its finishing order alone
+/// (each item pushing its index under a lock) passed in 270 of 300 trials at 16 items and 6 of 400 at 1024, on
+/// 12 cores. Under [`Threads::ONE`] or a [`Threads::Count`] budget, `f` runs at most that many tasks at once
+/// in any pool, so the large pool adds a rerun, not concurrency.
+///
+/// [`Threads::ONE`]: super::Threads::ONE
+/// [`Threads::Count`]: super::Threads::Count
+///
 /// Return bit patterns, such as floats through `f64::to_bits`: `R: Eq` rules out bare floats, where
 /// `0.0 == -0.0` and a NaN never equals itself. It does not certify bits by itself: a float wrapper
 /// with its own `Eq` would pass.
